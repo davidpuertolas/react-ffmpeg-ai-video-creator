@@ -10,7 +10,7 @@
     "postinstall": "cpy 'node_modules/@ffmpeg/core/dist/umd/*' 'node_modules/@ffmpeg/core/dist/worker/*' public/"
   },
   "dependencies": {
-    "@ffmpeg/ffmpeg": "^0.12.7",
+    "@ffmpeg/ffmpeg": "^0.12.6",
     "@ffmpeg/util": "^0.12.1",
     "@heroicons/react": "^2.2.0",
     "@remotion/media-utils": "^4.0.242",
@@ -25,6 +25,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-player": "^2.16.0",
+    "recordrtc": "^5.6.2",
     "videocontext": "^0.54.0",
     "zustand": "^5.0.2"
   },

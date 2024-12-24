@@ -5,7 +5,8 @@ import { ArrowRightIcon } from "@heroicons/react/24/outline";
 import OpenAI from 'openai';
 import html2canvas from 'html2canvas';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile } from '@ffmpeg/util';
+import { toBlobURL } from '@ffmpeg/util';
+import RecordRTC from 'recordrtc';
 
 const steps = [
   { id: 1, name: "URL" },
@@ -71,6 +72,35 @@ const generateSpeech = async (text: string) => {
   }
 };
 
+// Añadir esta función helper antes del handleDownload
+const wrapText = (
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number
+) => {
+  const words = text.split(' ');
+  let line = '';
+  let currentY = y;
+
+  for (const word of words) {
+    const testLine = line + word + ' ';
+    const metrics = ctx.measureText(testLine);
+
+    if (metrics.width > maxWidth) {
+      ctx.fillText(line, x, currentY);
+      line = word + ' ';
+      currentY += lineHeight;
+    } else {
+      line = testLine;
+    }
+  }
+  ctx.fillText(line, x, currentY);
+  return currentY; // Retornar la altura final del texto
+};
+
 export default function RedditVideoPage() {
   const [currentStep, setCurrentStep] = useState(1);
   const [redditUrl, setRedditUrl] = useState("");
@@ -88,6 +118,16 @@ export default function RedditVideoPage() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [avatarIndex, setAvatarIndex] = useState<number>(Math.floor(Math.random() * 7));
   const [avatarIndices, setAvatarIndices] = useState<number[]>([]);
+  const [isRecording, setIsRecording] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [isRecordingFast, setIsRecordingFast] = useState(false);
+  const [previewDuration, setPreviewDuration] = useState(0);
+  const [previewCurrentTime, setPreviewCurrentTime] = useState(0);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(true);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
 
   // Añadir una referencia al video y al canvas
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -165,12 +205,20 @@ export default function RedditVideoPage() {
   };
 
   const handlePlayPause = () => {
-    if (!isPlaying) {
-      if (currentMessageIndex === -1) {
-        setCurrentMessageIndex(0);
+    if (videoRef.current) {
+      if (isVideoPlaying) {
+        videoRef.current.pause();
+        setIsVideoPlaying(false);
+      } else {
+        // Si el video está al final (o cerca del final), reiniciarlo
+        if (videoRef.current.currentTime >= previewDuration - 0.1) {
+          videoRef.current.currentTime = 0;
+          setCurrentMessageIndex(0);
+        }
+        videoRef.current.play();
+        setIsVideoPlaying(true);
       }
     }
-    setIsPlaying(!isPlaying);
   };
 
   useEffect(() => {
@@ -311,33 +359,40 @@ export default function RedditVideoPage() {
   }, [audioFiles, currentStep]);
 
   useEffect(() => {
-    if (currentStep === 4) {
-      console.log('🎬 Iniciando preview automática');
-      // Establecer video de fondo
-      setVideoUrl('/minecraft.mp4');
+    if (currentStep === 4 && videoRef.current) {
+      const video = videoRef.current;
+      setVideoUrl('/minecraft-vertical.mp4');
 
-      // Iniciar reproducción automática de mensajes
-      const playMessages = async () => {
-        // Mostrar título primero
-        setCurrentMessageIndex(0);
-        await new Promise(resolve => setTimeout(resolve, 3000)); // 3 segundos para el título
+      // Duración exacta: 3 segundos por mensaje
+      const totalDuration = (selectedComments.length + 1) * 3;
+      setPreviewDuration(totalDuration);
 
-        // Reproducir cada comentario
-        for (let i = 0; i < selectedComments.length; i++) {
-          setCurrentMessageIndex(i + 1);
-          await new Promise(resolve => setTimeout(resolve, 3000)); // 3 segundos por comentario
+      const updatePreview = () => {
+        // Si el video supera la duración total, lo detenemos
+        if (video.currentTime >= totalDuration) {
+          video.pause();
+          setIsVideoPlaying(false);
+          setCurrentMessageIndex(-1);
+          return;
         }
 
-        // Volver a empezar
-        playMessages();
+        setPreviewCurrentTime(video.currentTime);
+
+        // Actualizar mensaje cada 3 segundos
+        const messageIndex = Math.floor(video.currentTime / 3);
+        if (messageIndex <= selectedComments.length) {
+          setCurrentMessageIndex(messageIndex);
+        }
       };
 
-      // Iniciar la reproducción
-      playMessages();
+      video.addEventListener('timeupdate', updatePreview);
+      video.play();
+      setIsVideoPlaying(true);
 
-      // Cleanup
       return () => {
+        video.removeEventListener('timeupdate', updatePreview);
         setCurrentMessageIndex(-1);
+        setIsVideoPlaying(false);
       };
     }
   }, [currentStep, selectedComments.length]);
@@ -467,34 +522,6 @@ export default function RedditVideoPage() {
       requestAnimationFrame(drawFrame);
     };
 
-    // Función helper para envolver texto
-    const wrapText = (
-      ctx: CanvasRenderingContext2D,
-      text: string,
-      x: number,
-      y: number,
-      maxWidth: number,
-      lineHeight: number
-    ) => {
-      const words = text.split(' ');
-      let line = '';
-      let currentY = y;
-
-      for (const word of words) {
-        const testLine = line + word + ' ';
-        const metrics = ctx.measureText(testLine);
-
-        if (metrics.width > maxWidth) {
-          ctx.fillText(line, x, currentY);
-          line = word + ' ';
-          currentY += lineHeight;
-        } else {
-          line = testLine;
-        }
-      }
-      ctx.fillText(line, x, currentY);
-    };
-
     // Iniciar la animación
     video.play();
     drawFrame();
@@ -504,50 +531,230 @@ export default function RedditVideoPage() {
     };
   }, [currentMessageIndex, isDarkMode, selectedComments, storyData, avatarIndices]);
 
-  // Agregar esta función de descarga
-  const handleDownload = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  // Añadir esta función de descarga
+  const handleDownload = async () => {
+    if (!canvasRef.current || !videoRef.current || !storyData) return;
 
-    console.log('🎥 Iniciando grabación para descarga...');
+    try {
+      setIsDownloading(true);
+      setDownloadProgress(0);
+      console.log('🎬 Starting video export...');
 
-    const stream = canvas.captureStream(30);
-    const mediaRecorder = new MediaRecorder(stream, {
-      mimeType: 'video/webm;codecs=vp8',
-      videoBitsPerSecond: 8000000
-    });
+      // 1. Preparar el video para la grabación
+      const canvas = canvasRef.current;
+      const video = videoRef.current;
+      const totalDuration = (selectedComments.length + 1) * 3000; // en ms
 
-    const chunks: Blob[] = [];
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
-        console.log(`📦 Chunk recibido: ${e.data.size} bytes`);
-        chunks.push(e.data);
+      // 2. Reiniciar el video al principio
+      video.currentTime = 0;
+      await video.play();
+      setIsVideoPlaying(true);
+      setCurrentMessageIndex(0);
+
+      // 3. Configurar la grabación
+      const stream = canvas.captureStream(60);
+      const chunks: Blob[] = [];
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp9',
+        videoBitsPerSecond: 8000000
+      });
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
+          const progress = (video.currentTime / (totalDuration / 1000)) * 90;
+          setDownloadProgress(Math.min(90, progress));
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        try {
+          setDownloadProgress(95);
+          console.log('📼 Recording completed, creating file...');
+
+          // Crear el blob final
+          const blob = new Blob(chunks, { type: 'video/webm' });
+
+          // Descargar directamente el archivo webm
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `reddit-video-${Date.now()}.webm`;
+          a.click();
+          URL.revokeObjectURL(url);
+
+          setDownloadProgress(100);
+          console.log('✅ Download complete!');
+        } catch (error) {
+          console.error('Error in mediaRecorder.onstop:', error);
+          throw error;
+        }
+      };
+
+      // 4. Comenzar grabación
+      mediaRecorder.start(1000);
+
+      // 5. Esperar a que termine la duración total
+      await new Promise<void>((resolve) => {
+        const checkEnd = setInterval(() => {
+          if (video.currentTime >= totalDuration / 1000) {
+            clearInterval(checkEnd);
+            mediaRecorder.stop();
+            resolve();
+          }
+        }, 100);
+      });
+
+    } catch (error) {
+      console.error('❌ Error during video export:', error);
+      alert('Error generating video. Please try again.');
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
+      setCurrentMessageIndex(-1);
+      setIsVideoPlaying(false);
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = 0;
+      }
+    }
+  };
+
+  // Función auxiliar para dibujar cada mensaje
+  const drawMessage = async (
+    ctx: CanvasRenderingContext2D,
+    messageIndex: number,
+    storyData: RedditData,
+    selectedComments: number[],
+    isDarkMode: boolean
+  ) => {
+    const width = ctx.canvas.width;
+    const height = ctx.canvas.height;
+    const cardWidth = width * 0.8;
+    const cardX = (width - cardWidth) / 2;
+
+    if (messageIndex === 0) {
+      // Dibujar título
+      const cardHeight = 300;
+      const cardY = height * 0.3;
+
+      // Card background
+      ctx.fillStyle = isDarkMode ? '#1A1A1A' : '#FFFFFF';
+      ctx.fillRect(cardX, cardY, cardWidth, cardHeight);
+
+      // Texto del título
+      ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
+      ctx.font = 'bold 40px Arial';
+      wrapText(ctx, storyData.title, cardX + 20, cardY + 80, cardWidth - 40, 50);
+
+      // Metadata
+      ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
+      ctx.font = '24px Arial';
+      ctx.fillText(storyData.author, cardX + 20, cardY + 40);
+
+    } else {
+      // Dibujar comentario
+      const comment = storyData.commentsList[selectedComments[messageIndex - 1]];
+      const cardHeight = 250;
+      const cardY = height * 0.3;
+
+      // Card background
+      ctx.fillStyle = isDarkMode ? '#1A1A1A' : '#FFFFFF';
+      ctx.fillRect(cardX, cardY, cardWidth, cardHeight);
+
+      // Texto del comentario
+      ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
+      ctx.font = '32px Arial';
+      wrapText(ctx, comment.content, cardX + 20, cardY + 80, cardWidth - 40, 40);
+
+      // Metadata
+      ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
+      ctx.font = '24px Arial';
+      ctx.fillText(comment.author, cardX + 20, cardY + 40);
+    }
+  };
+
+  // Añadir este useEffect para manejar la visibilidad y cierre de página
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden && isRecording) {
+        console.log('⚠️ Page hidden while recording, pausing...');
+        if (recorderRef.current?.state === 'recording') {
+          recorderRef.current.pause();
+        }
+        if (videoRef.current) videoRef.current.pause();
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      } else if (!document.hidden && isRecording) {
+        console.log('✅ Page visible again, resuming...');
+        if (recorderRef.current?.state === 'paused') {
+          recorderRef.current.resume();
+        }
+        if (videoRef.current) videoRef.current.play();
       }
     };
 
-    mediaRecorder.onstop = () => {
-      console.log('⏹️ Grabación completada');
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      console.log(`📊 Tamaño total del video: ${(blob.size / 1024 / 1024).toFixed(2)}MB`);
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `reddit-video-${Date.now()}.webm`;
-      a.click();
-      URL.revokeObjectURL(url);
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isRecording) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
     };
 
-    // Grabar durante el ciclo completo de mensajes
-    const duration = (selectedComments.length + 1) * 3000; // 3 segundos por mensaje
-    console.log(`⏱️ Duración total: ${duration/1000}s`);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
 
-    mediaRecorder.start();
-    console.log('▶️ Iniciando grabación');
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [isRecording]);
 
-    setTimeout(() => {
-      mediaRecorder.stop();
-    }, duration);
+  // Añadir cleanup cuando el componente se desmonta
+  useEffect(() => {
+    return () => {
+      if (recorderRef.current?.state === 'recording') {
+        recorderRef.current.stop();
+      }
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Cargar FFmpeg al inicio
+    const loadFFmpeg = async () => {
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      const ffmpeg = new FFmpeg();
+      try {
+        // Cargar los archivos necesarios de FFmpeg
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+        console.log('✅ FFmpeg loaded successfully');
+      } catch (error) {
+        console.error('❌ Error loading FFmpeg:', error);
+      }
+    };
+
+    loadFFmpeg();
+  }, []);
+
+  // Añadir función para manejar el seek
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (videoRef.current) {
+      const time = parseFloat(e.target.value);
+      videoRef.current.currentTime = time;
+      setPreviewCurrentTime(time);
+
+      // Si el video está en el final y el usuario busca una nueva posición,
+      // debemos actualizar el estado de reproducción
+      if (!isVideoPlaying && time < videoRef.current.duration) {
+        videoRef.current.play();
+        setIsVideoPlaying(true);
+      }
+    }
   };
 
   return (
@@ -723,147 +930,29 @@ export default function RedditVideoPage() {
               <div className="sticky top-4">
                 <h3 className="font-medium mb-4">Preview</h3>
                 <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden">
-                  {/* Video de fondo */}
                   <video
                     ref={videoRef}
+                    src={videoUrl}
                     className="absolute inset-0 w-full h-full object-cover"
-                    src="/minecraft.mp4"
                     autoPlay
-                    loop
                     muted
+                    playsInline
+                    onEnded={() => {
+                      console.log('Video ended'); // Para debugging
+                      setIsVideoPlaying(false);
+                      setCurrentMessageIndex(-1);
+                    }}
                   />
-
-                  {/* Overlay con el contenido */}
-                  <div className="absolute inset-0 bg-black/50">
-                    <div className="relative h-full flex flex-col">
-                      {/* Área de mensajes */}
-                      <div className="flex-1 p-4 flex items-center justify-center">
-                        {currentMessageIndex === 0 && (
-                          <div className={`w-full max-w-[300px] ${
-                            isDarkMode ? 'bg-gray-950 text-gray-100' : 'bg-white text-gray-900'
-                          } rounded-xl shadow-[0_8px_16px_rgba(0,0,0,0.1)] p-3 animate-fade-in`}>
-                            <div className="flex items-center gap-2 mb-2">
-                              <div className="w-8 h-8 rounded-full overflow-hidden">
-                                <img src={getRandomProfileImage()} alt="Profile" className="w-full h-full object-cover" />
-                              </div>
-                              <div className="flex-1">
-                                <div className="flex flex-col">
-                                  <span className="font-medium">u/{storyData.author}</span>
-                                  <span className={`text-xs ${
-                                    isDarkMode ? 'text-gray-400' : 'text-gray-500'
-                                  }`}>
-                                    {storyData.subreddit} • {new Date(storyData.created).toLocaleDateString()}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                            <p className="text-lg font-bold mb-2">{storyData.title}</p>
-                            {/* Footer con stats */}
-                            <div className="flex items-center gap-4 mt-3">
-                              <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-                                </svg>
-                                <span>{storyData.upvotes.toLocaleString()}</span>
-                              </div>
-                              <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                  <path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2z" />
-                                </svg>
-                                <span>{storyData.comments.toLocaleString()}</span>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-
-                        {currentMessageIndex > 0 && (
-                          <div className={`w-full max-w-[300px] ${
-                            isDarkMode ? 'bg-gray-950 text-gray-100' : 'bg-white text-gray-900'
-                          } rounded-xl shadow-[0_8px_16px_rgba(0,0,0,0.1)] p-3 animate-fade-in`}>
-                            <div className="flex items-center gap-2 mb-2">
-                              <div className="w-7 h-7 rounded-full overflow-hidden">
-                                <img src={getRandomProfileImage()} alt="Profile" className="w-full h-full object-cover" />
-                              </div>
-                              <div className="flex-1">
-                                <div className="flex flex-col">
-                                  <span className="font-medium">
-                                    u/{storyData.commentsList[selectedComments[currentMessageIndex - 1]].author}
-                                    {storyData.commentsList[selectedComments[currentMessageIndex - 1]].isSubmitter && (
-                                      <span className={`ml-1 px-1.5 py-0.5 rounded-full text-xs font-medium ${
-                                        isDarkMode ? 'bg-blue-900 text-blue-300' : 'bg-blue-100 text-blue-600'
-                                      }`}>
-                                        OP
-                                      </span>
-                                    )}
-                                  </span>
-                                  <span className={`text-xs ${
-                                    isDarkMode ? 'text-gray-400' : 'text-gray-500'
-                                  }`}>
-                                    • {getCommentDate(storyData.created, selectedComments[currentMessageIndex - 1]).toLocaleDateString()}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                            <p className="text-sm mb-3">{storyData.commentsList[selectedComments[currentMessageIndex - 1]].content}</p>
-                            {/* Footer con stats aleatorios */}
-                            <div className="flex items-center gap-4">
-                              <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-                                </svg>
-                                <span>{getRandomStats().likes.toLocaleString()}</span>
-                              </div>
-                              <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                  <path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4V4c0-1.1-.9-2-2-2z" />
-                                </svg>
-                                <span>{getRandomStats().comments.toLocaleString()}</span>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Controles */}
-                      <div className="p-4 flex items-center justify-center gap-4">
-                        <button
-                          onClick={() => setCurrentMessageIndex(prev => Math.max(-1, prev - 1))}
-                          className="p-2 rounded-full bg-white/20 hover:bg-white/30 text-white"
-                          disabled={currentMessageIndex <= -1}
-                        >
-                          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                          </svg>
-                        </button>
-
-                        <button
-                          onClick={handlePlayPause}
-                          className="p-2 rounded-full bg-white/20 hover:bg-white/30 text-white"
-                        >
-                          {isPlaying ? (
-                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                          ) : (
-                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                          )}
-                        </button>
-
-                        <button
-                          onClick={() => setCurrentMessageIndex(prev => Math.min(selectedComments.length, prev + 1))}
-                          className="p-2 rounded-full bg-white/20 hover:bg-white/30 text-white"
-                          disabled={currentMessageIndex >= selectedComments.length}
-                        >
-                          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 w-full h-full"
+                    width={1080}
+                    height={1920}
+                    style={{
+                      zIndex: 1,
+                      imageRendering: 'pixelated'
+                    }}
+                  />
                 </div>
               </div>
             </div>
@@ -987,22 +1076,79 @@ export default function RedditVideoPage() {
               <video
                 ref={videoRef}
                 src={videoUrl}
-                className="hidden"
+                className="absolute inset-0 w-full h-full object-cover"
                 autoPlay
-                loop
                 muted
                 playsInline
+                onEnded={() => {
+                  console.log('Video ended'); // Para debugging
+                  setIsVideoPlaying(false);
+                  setCurrentMessageIndex(-1);
+                }}
               />
               <canvas
                 ref={canvasRef}
-                className="w-full h-full"
+                className="absolute inset-0 w-full h-full"
+                width={1080}
+                height={1920}
               />
+              {/* Controles */}
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 p-4">
+                <div className="flex items-center gap-4">
+                  {/* Botón Play/Pause */}
+                  <button
+                    onClick={handlePlayPause}
+                    className="text-white hover:text-gray-200"
+                  >
+                    {isVideoPlaying ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                      </svg>
+                    )}
+                  </button>
+
+                  {/* Tiempo actual */}
+                  <span className="text-white text-sm">
+                    {Math.floor(previewCurrentTime)}s
+                  </span>
+
+                  {/* Seekbar */}
+                  <input
+                    type="range"
+                    min="0"
+                    max={previewDuration}
+                    value={previewCurrentTime}
+                    onChange={handleSeek}
+                    className="flex-1 h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
+                  />
+
+                  {/* Duración total */}
+                  <span className="text-white text-sm">
+                    {previewDuration}s
+                  </span>
+                </div>
+              </div>
             </div>
             <button
               onClick={handleDownload}
-              className="mt-4 w-full bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700"
+              disabled={isDownloading}
+              className="mt-4 w-full bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              Download Video
+              {isDownloading ? (
+                <>
+                  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  {downloadProgress < 100 ? `Processing ${Math.round(downloadProgress)}%` : 'Downloading...'}
+                </>
+              ) : (
+                'Download Video'
+              )}
             </button>
           </div>
         </div>
