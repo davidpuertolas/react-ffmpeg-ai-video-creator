@@ -223,11 +223,16 @@ export default function RedditVideoPage() {
   };
 
   const toggleComment = (index: number) => {
-    setSelectedComments(prev =>
-      prev.includes(index)
-        ? prev.filter(i => i !== index)
-        : [...prev, index]
-    );
+    setSelectedComments(prev => {
+      if (prev.includes(index)) {
+        // Si ya está seleccionado, lo removemos y reordenamos los demás
+        const newSelected = prev.filter(i => i !== index);
+        return newSelected;
+      } else {
+        // Si no está seleccionado, lo añadimos al final
+        return [...prev, index];
+      }
+    });
   };
 
   const handlePlayPause = () => {
@@ -324,35 +329,95 @@ export default function RedditVideoPage() {
 
   // Añadir función para generar el video completo
   const generateVideo = async () => {
-    console.log('🎬 Starting demo generation process');
+    console.log('🎬 Starting high quality video generation...');
     setIsGenerating(true);
     setProgress(0);
 
     try {
-      // Simular generación de audio
-      const demoAudioUrl = '/demo-audio.mp3'; // Puedes añadir un audio estático en public/
+      // 1. Crear un canvas de alta resolución
+      const canvas = new OffscreenCanvas(1920, 3840); // 4K vertical
+      const ctx = canvas.getContext('2d', {
+        alpha: false,
+        willReadFrequently: true
+      });
+      if (!ctx) throw new Error('Failed to get canvas context');
 
-      // Simular progreso
-      for (let i = 0; i <= 100; i += 10) {
-        setProgress(i);
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-
-      // Simular audios generados
-      setAudioFiles({
-        title: { audio: demoAudioUrl, text: storyData.title },
-        comments: selectedComments.map(index => ({
-          audio: demoAudioUrl,
-          text: storyData.commentsList[index].content,
-          author: storyData.commentsList[index].author
-        }))
+      // 2. Pre-cargar el video de fondo
+      const backgroundVideo = document.createElement('video');
+      backgroundVideo.src = '/minecraft-vertical.mp4';
+      backgroundVideo.muted = true;
+      await new Promise<void>((resolve) => {
+        backgroundVideo.onloadeddata = () => resolve();
+        backgroundVideo.load();
       });
 
-      console.log('✅ Demo generation complete!');
+      // 3. Inicializar FFmpeg
+      const ffmpeg = new FFmpeg();
+      await ffmpeg.load();
+      console.log('✅ FFmpeg loaded');
+
+      // 4. Calcular frames totales (30fps * duración)
+      const fps = 30;
+      const duration = (selectedComments.length + 1) * 3; // 3 segundos por mensaje
+      const totalFrames = fps * duration;
+
+      // 5. Generar y guardar cada frame
+      for (let frame = 0; frame < totalFrames; frame++) {
+        // Calcular tiempo actual y mensaje correspondiente
+        const currentTime = frame / fps;
+        const messageIndex = Math.floor(currentTime / 3);
+
+        // Posicionar el video en el tiempo correcto
+        backgroundVideo.currentTime = currentTime % backgroundVideo.duration;
+        await new Promise(r => setTimeout(r, 10)); // Esperar a que el video se actualice
+
+        // Dibujar frame
+        ctx.drawImage(backgroundVideo, 0, 0, canvas.width, canvas.height);
+
+        if (messageIndex <= selectedComments.length) {
+          drawMessage(ctx, messageIndex, isDarkMode, storyData, selectedComments);
+        }
+
+        // Convertir canvas a PNG de alta calidad
+        const blob = await canvas.convertToBlob({
+          type: 'image/png',
+          quality: 1
+        });
+
+        // Guardar frame
+        const frameData = await blob.arrayBuffer();
+        await ffmpeg.writeFile(`frame${frame.toString().padStart(6, '0')}.png`, new Uint8Array(frameData));
+
+        // Actualizar progreso
+        const progress = (frame / totalFrames) * 100;
+        setProgress(progress);
+        console.log(`📊 Rendering progress: ${progress.toFixed(1)}%`);
+      }
+
+      // 6. Generar video de alta calidad con FFmpeg
+      console.log('🎥 Generating final video...');
+      await ffmpeg.exec([
+        '-framerate', '30',
+        '-i', 'frame%06d.png',
+        '-c:v', 'libx264',
+        '-preset', 'veryslow', // Máxima calidad
+        '-crf', '17', // Calidad casi sin pérdida (0-51, menor es mejor)
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        'output.mp4'
+      ]);
+
+      // 7. Leer el video final
+      const outputData = await ffmpeg.readFile('output.mp4');
+      const videoBlob = new Blob([outputData], { type: 'video/mp4' });
+      setPrerenderedVideo(videoBlob);
+
+      console.log('✅ High quality video generated successfully!');
+      console.log(`📊 Final video size: ${(videoBlob.size / (1024 * 1024)).toFixed(2)}MB`);
 
     } catch (error) {
-      console.error('❌ Error during demo generation:', error);
-      alert('Failed to generate demo');
+      console.error('❌ Error generating video:', error);
+      alert('Failed to generate video. Please try again.');
     } finally {
       setIsGenerating(false);
       setProgress(100);
@@ -385,9 +450,13 @@ export default function RedditVideoPage() {
   }, [audioFiles, currentStep]);
 
   useEffect(() => {
-    if (currentStep === 4 && videoRef.current) {
+    if ((currentStep === 3 || currentStep === 4) && videoRef.current) {
       const video = videoRef.current;
-      setVideoUrl('/minecraft-vertical.mp4');
+
+      // Si estamos en el paso 3, usamos el video de minecraft
+      if (currentStep === 3) {
+        setVideoUrl('/minecraft-vertical.mp4');
+      }
 
       // Duración exacta: 3 segundos por mensaje
       const totalDuration = (selectedComments.length + 1) * 3;
@@ -441,22 +510,11 @@ export default function RedditVideoPage() {
     const ctx = canvas?.getContext('2d');
     const video = videoRef.current;
 
-    if (!ctx || !video) return;
+    if (!ctx || !video || !storyData) return;
 
     // Configurar dimensiones del canvas
     canvas.width = 1080;
     canvas.height = 1920;
-
-    // Generar números aleatorios para likes y comentarios al inicio
-    const initialLikes = Math.floor(Math.random() * 100) + 1;
-    const initialComments = Math.floor(Math.random() * 100) + 1;
-
-    // Preload images
-    const images = Array.from({ length: 7 }, (_, i) => {
-      const img = new Image();
-      img.src = `/redditimages/${i + 1}.jpg`;
-      return img;
-    });
 
     const drawFrame = () => {
       // Dibujar el video
@@ -466,7 +524,7 @@ export default function RedditVideoPage() {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Dibujar el contenido actual
+      // Dibujar el contenido actual si hay un mensaje seleccionado
       if (currentMessageIndex >= 0 && storyData) {
         // Configurar estilos base
         const cardWidth = canvas.width * 0.8;
@@ -474,8 +532,10 @@ export default function RedditVideoPage() {
         let cardHeight = 200; // Altura base
 
         // Ajustar altura según el contenido
-        const content = currentMessageIndex === 0 ? storyData.title : storyData.commentsList[selectedComments[currentMessageIndex - 1]].content;
-        const lines = Math.ceil(content.length / 44); // Aproximación de líneas
+        const content = currentMessageIndex === 0
+          ? storyData.title
+          : storyData.commentsList[selectedComments[currentMessageIndex - 1]].content;
+        const lines = Math.ceil(content.length / 44);
         cardHeight += currentMessageIndex === 0 ? lines * 80 : lines * 47;
 
         const cardY = (canvas.height - cardHeight) / 2.3;
@@ -490,7 +550,8 @@ export default function RedditVideoPage() {
         ctx.stroke();
 
         // Usar imagen de usuario específica para cada mensaje
-        const userImage = images[avatarIndices[currentMessageIndex]];
+        const userImage = new Image();
+        userImage.src = `/redditimages/${avatarIndices[currentMessageIndex] + 1}.jpg`;
         ctx.save();
         ctx.beginPath();
         ctx.arc(cardX + 45, cardY + 45, 25, 0, Math.PI * 2);
@@ -513,8 +574,7 @@ export default function RedditVideoPage() {
           ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
           ctx.font = 'bold 45px Arial';
           wrapText(ctx, storyData.title, cardX + 20, cardY + 165, cardWidth - 40, 50);
-
-        } else if (currentMessageIndex > 0) {
+        } else {
           // Dibujar comentario
           const comment = storyData.commentsList[selectedComments[currentMessageIndex - 1]];
 
@@ -522,22 +582,9 @@ export default function RedditVideoPage() {
           ctx.font = 'bold 36px Arial';
           ctx.fillText(`u/${comment.author}`, cardX + 80, cardY + 50);
 
-          // Fecha de creación
           ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
           ctx.font = '28px Arial';
           ctx.fillText('25/12/2024', cardX + 80, cardY + 90);
-
-          if (comment.isSubmitter) {
-            const opWidth = ctx.measureText('OP').width + 20;
-            ctx.fillStyle = isDarkMode ? '#1E40AF' : '#DBEAFE';
-            ctx.beginPath();
-            ctx.roundRect(cardX + 80 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 20, opWidth, 30, 15);
-            ctx.fill();
-
-            ctx.fillStyle = isDarkMode ? '#93C5FD' : '#2563EB';
-            ctx.font = 'bold 24px Arial';
-            ctx.fillText('OP', cardX + 85 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 45);
-          }
 
           // Contenido del comentario
           ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
@@ -562,7 +609,7 @@ export default function RedditVideoPage() {
     return () => {
       video.pause();
     };
-  }, [currentMessageIndex, isDarkMode, selectedComments, storyData, avatarIndices, messageStats]);
+  }, [currentMessageIndex, isDarkMode, selectedComments, storyData, avatarIndices, messageStats, currentStep]);
 
 
 
@@ -1023,8 +1070,13 @@ export default function RedditVideoPage() {
                   />
                 </div>
                 <p className="text-sm text-gray-600 mt-2">
-                  {`${prerenderProgress}% complete`}
+                  {prerenderProgress === 0 ? 'Initializing...' : `${prerenderProgress}% complete`}
                 </p>
+                {prerenderProgress === 0 && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Will auto-restart if stuck...
+                  </p>
+                )}
               </div>
               <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
                 <p className="text-sm text-blue-800">
@@ -1085,7 +1137,7 @@ export default function RedditVideoPage() {
         if (generateButton) {
           generateButton.click();
         }
-      }, 1000);
+      }, 100);
 
       console.log('🎬 Ready to start new recording from scratch');
 
@@ -1127,6 +1179,52 @@ export default function RedditVideoPage() {
 
     checkIfReady();
   }, [selectedComments.length, storyData, messageStats.length, avatarIndices.length]);
+
+  // Modificar el useEffect que maneja la reproducción automática
+  useEffect(() => {
+    if (currentStep === 3) {
+      // Mostrar el primer mensaje y activar reproducción automática
+      setCurrentMessageIndex(0);
+      setIsPlaying(true);
+
+      const video = videoRef.current;
+      if (video) {
+        video.currentTime = 0;
+        video.play();
+      }
+    }
+  }, [currentStep]);
+
+  // Modificar el useEffect que maneja el video y canvas para el paso 3
+  useEffect(() => {
+    if (currentStep === 3) {
+      const video = videoRef.current;
+      if (video) {
+        video.currentTime = 0; // Reiniciar el video al inicio
+        video.play();
+      }
+    }
+  }, [currentStep]);
+
+  // Añadir un nuevo useEffect para detectar el estancamiento
+  useEffect(() => {
+    let stuckTimer: NodeJS.Timeout | null = null;
+
+    if (isPrerendering && prerenderProgress === 0) {
+      // Iniciar temporizador cuando el progreso está en 0
+      stuckTimer = setTimeout(() => {
+        console.log('🔄 Progress stuck at 0%, auto-restarting...');
+        handleResume(); // Llamar a la misma función que el botón de restart
+      }, 2000); // 2 segundos
+    }
+
+    // Limpiar el timer si el progreso cambia o se detiene el pre-rendering
+    return () => {
+      if (stuckTimer) {
+        clearTimeout(stuckTimer);
+      }
+    };
+  }, [isPrerendering, prerenderProgress]);
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-8">
@@ -1265,16 +1363,23 @@ export default function RedditVideoPage() {
                         <span>•</span>
                         <span className="text-gray-500">{comment.upvotes.toLocaleString()} upvotes</span>
                       </div>
-                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                        selectedComments.includes(index)
-                          ? "bg-blue-500 border-blue-500 text-white"
-                          : "border-gray-300"
-                      }`}>
+                      <div className="flex items-center gap-2">
                         {selectedComments.includes(index) && (
-                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                            <path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" />
-                          </svg>
+                          <span className="text-sm font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded">
+                            #{selectedComments.indexOf(index) + 1}
+                          </span>
                         )}
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                          selectedComments.includes(index)
+                            ? "bg-blue-500 border-blue-500 text-white"
+                            : "border-gray-300"
+                        }`}>
+                          {selectedComments.includes(index) && (
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                              <path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" />
+                            </svg>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <p className="text-gray-700 text-sm">{comment.content}</p>
@@ -1285,6 +1390,7 @@ export default function RedditVideoPage() {
                 <button
                   onClick={() => setCurrentStep(3)}
                   className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+                  disabled={selectedComments.length === 0}
                 >
                   Continue with {selectedComments.length} comments
                 </button>
@@ -1306,28 +1412,63 @@ export default function RedditVideoPage() {
                 <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden">
                   <video
                     ref={videoRef}
-                    src={videoUrl}
+                    src="/minecraft-vertical.mp4"
                     className="absolute inset-0 w-full h-full object-cover"
                     autoPlay
                     muted
+                    loop
                     playsInline
-                    onEnded={() => {
-                      console.log('Video ended'); // Para debugging
-                      setIsVideoPlaying(false);
-                      setCurrentMessageIndex(-1);
-                    }}
                   />
                   <canvas
                     ref={canvasRef}
                     className="absolute inset-0 w-full h-full"
                     width={1080}
                     height={1920}
-                    style={{
-                      zIndex: 1,
-                      imageRendering: 'pixelated'
-                    }}
                   />
+
+                  {/* Añadir controles de video */}
+                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 p-4">
+                    <div className="flex items-center gap-4">
+                      {/* Botón Play/Pause */}
+                      <button
+                        onClick={handlePlayPause}
+                        className="text-white hover:text-gray-200"
+                      >
+                        {isVideoPlaying ? (
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+                          </svg>
+                        ) : (
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                          </svg>
+                        )}
+                      </button>
+
+                      {/* Tiempo actual */}
+                      <span className="text-white text-sm">
+                        {Math.floor(previewCurrentTime)}s
+                      </span>
+
+                      {/* Seekbar */}
+                      <input
+                        type="range"
+                        min="0"
+                        max={previewDuration}
+                        value={previewCurrentTime}
+                        onChange={handleSeek}
+                        className="flex-1 h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
+                      />
+
+                      {/* Duración total */}
+                      <span className="text-white text-sm">
+                        {previewDuration}s
+                      </span>
+                    </div>
+                  </div>
                 </div>
+
+
               </div>
             </div>
 
