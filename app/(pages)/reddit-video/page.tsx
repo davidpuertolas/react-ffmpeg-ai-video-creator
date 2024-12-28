@@ -103,7 +103,7 @@ const wrapText = (
 
 export default function RedditVideoPage() {
   const [currentStep, setCurrentStep] = useState(1);
-  const [redditUrl, setRedditUrl] = useState("");
+  const [redditUrl, setRedditUrl] = useState("https://www.reddit.com/r/Money/comments/1hjrq5o/is_there_an_end_to_the_want");
   const [isLoading, setIsLoading] = useState(false);
   const [storyData, setStoryData] = useState<RedditData | null>(null);
   const [urlError, setUrlError] = useState('');
@@ -158,6 +158,11 @@ export default function RedditVideoPage() {
 
   // Añadir una ref para la duración total
   const totalDurationRef = useRef<number>(0);
+
+  // Añadir estas referencias y estados
+  const framesRef = useRef<HTMLImageElement[]>([]);
+  const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
+  const [isLoadingFrames, setIsLoadingFrames] = useState(false);
 
   const isValidRedditUrl = (url: string) => {
     const redditPattern = /^https?:\/\/(www\.)?reddit\.com\/r\/[\w-]+\/comments\/[\w-]+\/.*/;
@@ -236,19 +241,9 @@ export default function RedditVideoPage() {
   };
 
   const handlePlayPause = () => {
-    if (videoRef.current) {
-      if (isVideoPlaying) {
-        videoRef.current.pause();
-        setIsVideoPlaying(false);
-      } else {
-        // Si el video está al final (o cerca del final), reiniciarlo
-        if (videoRef.current.currentTime >= previewDuration - 0.1) {
-          videoRef.current.currentTime = 0;
-          setCurrentMessageIndex(0);
-        }
-        videoRef.current.play();
-        setIsVideoPlaying(true);
-      }
+    setIsVideoPlaying(!isVideoPlaying);
+    if (!isVideoPlaying && currentFrameIndex >= framesRef.current.length - 1) {
+      setCurrentFrameIndex(0); // Reiniciar si estamos al final
     }
   };
 
@@ -357,7 +352,7 @@ export default function RedditVideoPage() {
       console.log('✅ FFmpeg loaded');
 
       // 4. Calcular frames totales (30fps * duración)
-      const fps = 30;
+      const fps = 20;
       const duration = (selectedComments.length + 1) * 3; // 3 segundos por mensaje
       const totalFrames = fps * duration;
 
@@ -555,7 +550,6 @@ export default function RedditVideoPage() {
         ctx.save();
         ctx.beginPath();
         ctx.arc(cardX + 45, cardY + 45, 25, 0, Math.PI * 2);
-        ctx.closePath();
         ctx.clip();
         ctx.drawImage(userImage, cardX + 20, cardY + 20, 50, 50);
         ctx.restore();
@@ -585,6 +579,18 @@ export default function RedditVideoPage() {
           ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
           ctx.font = '28px Arial';
           ctx.fillText('25/12/2024', cardX + 80, cardY + 90);
+
+          if (comment.isSubmitter) {
+            const opWidth = ctx.measureText('OP').width + 20;
+            ctx.fillStyle = isDarkMode ? '#1E40AF' : '#DBEAFE';
+            ctx.beginPath();
+            ctx.roundRect(cardX + 80 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 20, opWidth, 30, 15);
+            ctx.fill();
+
+            ctx.fillStyle = isDarkMode ? '#93C5FD' : '#2563EB';
+            ctx.font = 'bold 24px Arial';
+            ctx.fillText('OP', cardX + 85 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 45);
+          }
 
           // Contenido del comentario
           ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
@@ -1022,6 +1028,116 @@ export default function RedditVideoPage() {
     }
   };
 
+  // Modify the handleDownloadMixed function
+  const handleDownloadMixed = async () => {
+    if (!prerenderedVideo || !storyData) return;
+
+    try {
+      setIsDownloading(true);
+      setDownloadProgress(0);
+
+      // 1. Generate TTS for title and all selected comments
+      console.log('🎙️ Generating TTS audio for all content...');
+      const audioSegments: Blob[] = [];
+
+      // Generate title audio
+      const titleAudio = await generateSpeech(storyData.title);
+      if (titleAudio) {
+        const response = await fetch(titleAudio);
+        const blob = await response.blob();
+        audioSegments.push(blob);
+      }
+
+      // Generate audio for each selected comment
+      for (const commentIndex of selectedComments) {
+        const comment = storyData.commentsList[commentIndex];
+        const commentAudio = await generateSpeech(comment.content);
+        if (commentAudio) {
+          const response = await fetch(commentAudio);
+          const blob = await response.blob();
+          audioSegments.push(blob);
+        }
+        setDownloadProgress((audioSegments.length / (selectedComments.length + 1)) * 30);
+      }
+
+      console.log(`✅ Generated ${audioSegments.length} audio segments`);
+      setDownloadProgress(40);
+
+      // 2. Load FFmpeg
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      const ffmpeg = new FFmpeg();
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+      console.log('✅ FFmpeg loaded');
+      setDownloadProgress(50);
+
+      // 3. Write all audio files to FFmpeg
+      for (let i = 0; i < audioSegments.length; i++) {
+        await ffmpeg.writeFile(`audio${i}.mp3`, new Uint8Array(await audioSegments[i].arrayBuffer()));
+      }
+
+      // 4. Create a concatenation file
+      const concatContent = audioSegments
+        .map((_, i) => `file 'audio${i}.mp3'`)
+        .join('\n');
+      await ffmpeg.writeFile('concat.txt', concatContent);
+
+      // 5. Concatenate all audio files
+      await ffmpeg.exec([
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'concat.txt',
+        '-c', 'copy',
+        'combined_audio.mp3'
+      ]);
+      console.log('✅ Audio files concatenated');
+      setDownloadProgress(70);
+
+      // 6. Write the video file
+      const videoData = await prerenderedVideo.arrayBuffer();
+      await ffmpeg.writeFile('video.webm', new Uint8Array(videoData));
+      setDownloadProgress(80);
+
+      // 7. Mix video with concatenated audio
+      await ffmpeg.exec([
+        '-i', 'video.webm',
+        '-i', 'combined_audio.mp3',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-strict', 'experimental',
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-shortest',
+        'output.mp4'
+      ]);
+      console.log('✅ Video and audio mixed');
+      setDownloadProgress(90);
+
+      // 8. Read and download the final file
+      const data = await ffmpeg.readFile('output.mp4');
+      const finalBlob = new Blob([data], { type: 'video/mp4' });
+
+      // Create download link
+      const url = URL.createObjectURL(finalBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `reddit-video-with-tts-${Date.now()}.mp4`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      console.log('✅ Download started');
+      setDownloadProgress(100);
+
+    } catch (error) {
+      console.error('❌ Error creating video with TTS:', error);
+      alert('Error creating video with TTS. Please try again.');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   // Modificar el botón en el paso 3 para usar la nueva función
   const renderStep3Button = () => (
     <button
@@ -1226,6 +1342,90 @@ export default function RedditVideoPage() {
     };
   }, [isPrerendering, prerenderProgress]);
 
+  // Añadir esta función para cargar los frames
+  const loadFrames = async () => {
+    setIsLoadingFrames(true);
+    const frames: HTMLImageElement[] = [];
+
+    try {
+      // Cargar los 150 frames (o el número que tengas)
+      for (let i = 1; i <= 150; i++) {
+        const img = new Image();
+        img.src = `/frames/ezgif-frame-${i.toString().padStart(3, '0')}.jpg`;
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+        });
+        frames.push(img);
+      }
+
+      console.log(`✅ Loaded ${frames.length} frames successfully`);
+      framesRef.current = frames;
+      setIsLoadingFrames(false);
+    } catch (error) {
+      console.error('❌ Error loading frames:', error);
+      setIsLoadingFrames(false);
+    }
+  };
+
+  // Modificar el useEffect que maneja el canvas y los frames
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+
+    if (!ctx || !storyData || !framesRef.current.length) return;
+
+    let animationFrameId: number;
+    let lastFrameTime = 0;
+    const fps = 20; // Ajustar a 20 FPS
+    const frameInterval = 1000 / fps;
+
+    const drawFrame = (timestamp: number) => {
+      if (timestamp - lastFrameTime >= frameInterval) {
+        // Limpiar el canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Dibujar el frame actual
+        const currentFrame = framesRef.current[currentFrameIndex];
+        ctx.drawImage(currentFrame, 0, 0, canvas.width, canvas.height);
+
+        // Dibujar el overlay y el contenido actual
+        if (currentMessageIndex >= 0) {
+          // Aquí va el código existente para dibujar el contenido
+          // ...
+        }
+
+        // Actualizar el último tiempo de frame
+        lastFrameTime = timestamp;
+
+        // Avanzar al siguiente frame si está reproduciendo
+        if (isVideoPlaying) {
+          setCurrentFrameIndex(prev =>
+            prev + 1 >= framesRef.current.length ? 0 : prev + 1
+          );
+        }
+      }
+
+      animationFrameId = requestAnimationFrame(drawFrame);
+    };
+
+    animationFrameId = requestAnimationFrame(drawFrame);
+
+    // Cleanup
+    return () => {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
+  }, [currentFrameIndex, currentMessageIndex, storyData, isVideoPlaying]);
+
+  // Añadir useEffect para cargar los frames cuando se entra al paso 3
+  useEffect(() => {
+    if (currentStep === 3) {
+      loadFrames();
+    }
+  }, [currentStep]);
+
   return (
     <div className="max-w-4xl mx-auto px-6 py-8">
       {/* Añadir la pantalla de pre-renderizado */}
@@ -1410,21 +1610,18 @@ export default function RedditVideoPage() {
               <div className="sticky top-4">
                 <h3 className="font-medium mb-4">Preview</h3>
                 <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden">
-                  <video
-                    ref={videoRef}
-                    src="/minecraft-vertical.mp4"
-                    className="absolute inset-0 w-full h-full object-cover"
-                    autoPlay
-                    muted
-                    loop
-                    playsInline
-                  />
-                  <canvas
-                    ref={canvasRef}
-                    className="absolute inset-0 w-full h-full"
-                    width={1080}
-                    height={1920}
-                  />
+                  {isLoadingFrames ? (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span>Loading frames...</span>
+                    </div>
+                  ) : (
+                    <canvas
+                      ref={canvasRef}
+                      className="absolute inset-0 w-full h-full"
+                      width={1080}
+                      height={1920}
+                    />
+                  )}
 
                   {/* Añadir controles de video */}
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 p-4">
@@ -1462,7 +1659,7 @@ export default function RedditVideoPage() {
 
                       {/* Duración total */}
                       <span className="text-white text-sm">
-                        {previewDuration}s
+                        {`${previewDuration}s`}
                       </span>
                     </div>
                   </div>
@@ -1583,19 +1780,6 @@ export default function RedditVideoPage() {
           <h2 className="text-xl font-semibold mb-4">Generated Content</h2>
           <div className="max-w-lg mx-auto">
             <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden">
-              <video
-                ref={videoRef}
-                src={videoUrl}
-                className="absolute inset-0 w-full h-full object-cover"
-                autoPlay
-                muted
-                playsInline
-                onEnded={() => {
-                  console.log('Video ended'); // Para debugging
-                  setIsVideoPlaying(false);
-                  setCurrentMessageIndex(-1);
-                }}
-              />
               <canvas
                 ref={canvasRef}
                 className="absolute inset-0 w-full h-full"
@@ -1660,11 +1844,45 @@ export default function RedditVideoPage() {
                 'Download Video'
               )}
             </button>
+
+            {/* Añadir reproductor de audio */}
+            <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Preview Audio</h3>
+              <audio
+                controls
+                className="w-full"
+                src="/demo.mp3"
+              >
+                Your browser does not support the audio element.
+              </audio>
+
+              {/* Añadir botón para descargar video con audio */}
+              <button
+                onClick={handleDownloadMixed}
+                disabled={isDownloading}
+                className="mt-4 w-full bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isDownloading ? (
+                  <>
+                    <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                    </svg>
+                    Download Video + Audio
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
 }
-
-

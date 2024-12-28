@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "postinstall": "cpy 'node_modules/@ffmpeg/core/dist/umd/*' 'node_modules/@ffmpeg/core/dist/worker/*' public/"
+    "postinstall": "cpy 'node_modules/@ffmpeg/core/dist/umd/*' public/"
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.6",
