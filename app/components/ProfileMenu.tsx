@@ -1,51 +1,49 @@
 "use client";
 
-import { useState } from "react";
-import Link from "next/link";
+import { Fragment } from 'react';
+import { Menu, Transition } from '@headlessui/react';
+import { UserCircleIcon } from '@heroicons/react/24/outline';
 
 export default function ProfileMenu() {
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-
   return (
-    <div className="relative">
-      <button
-        onClick={() => setIsMenuOpen(!isMenuOpen)}
-        className="w-8 h-8 bg-[#00BA88] rounded-full flex items-center justify-center text-white font-medium"
+    <Menu as="div" className="relative">
+      <Menu.Button className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-gray-50 transition-colors">
+        <UserCircleIcon className="w-6 h-6 text-gray-600" />
+      </Menu.Button>
+      <Transition
+        as={Fragment}
+        enter="transition ease-out duration-100"
+        enterFrom="transform opacity-0 scale-95"
+        enterTo="transform opacity-100 scale-100"
+        leave="transition ease-in duration-75"
+        leaveFrom="transform opacity-100 scale-100"
+        leaveTo="transform opacity-0 scale-95"
       >
-        D
-      </button>
-
-      {isMenuOpen && (
-        <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-1 border border-gray-100">
-          <Link
-            href="/settings"
-            className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-          >
-            Settings
-          </Link>
-          <Link
-            href="/upgrade"
-            className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-          >
-            Upgrade
-          </Link>
-          <Link
-            href="/help"
-            className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-          >
-            Help & Support
-          </Link>
-          <button
-            onClick={() => {
-              // Aquí irá la lógica de logout
-              console.log("Logout clicked");
-            }}
-            className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-50"
-          >
-            Log Out
-          </button>
-        </div>
-      )}
-    </div>
+        <Menu.Items className="absolute right-0 mt-2 w-48 origin-top-right rounded-xl bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none p-1">
+          <Menu.Item>
+            {({ active }) => (
+              <button
+                className={`${
+                  active ? 'bg-gray-50' : ''
+                } group flex w-full items-center rounded-lg px-4 py-2 text-sm text-gray-700`}
+              >
+                Profile Settings
+              </button>
+            )}
+          </Menu.Item>
+          <Menu.Item>
+            {({ active }) => (
+              <button
+                className={`${
+                  active ? 'bg-gray-50' : ''
+                } group flex w-full items-center rounded-lg px-4 py-2 text-sm text-gray-700`}
+              >
+                Sign Out
+              </button>
+            )}
+          </Menu.Item>
+        </Menu.Items>
+      </Transition>
+    </Menu>
   );
 }
