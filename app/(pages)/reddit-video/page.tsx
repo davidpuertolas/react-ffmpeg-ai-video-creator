@@ -7,6 +7,7 @@ import html2canvas from 'html2canvas';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
 import RecordRTC from 'recordrtc';
+import { fetchFile } from '@ffmpeg/util';
 
 const steps = [
   { id: 1, name: "URL" },
@@ -38,70 +39,108 @@ const openai = new OpenAI({
   dangerouslyAllowBrowser: true // Solo para desarrollo
 });
 
-// Añadir función para generar audio
-const generateSpeech = async (text: string) => {
-  try {
-    console.log('🎙️ Generating speech for:', text.substring(0, 50) + '...');
-    console.log('Using voice model:', "tts-1");
+// Definir las voces de una manera más simple
+const VOICE_OPTIONS = [
+  { id: 'alloy', name: 'Neutral', demo: '/voices/alloy.wav' },
+  { id: 'echo', name: 'Radio Host', demo: '/voices/echo.wav' },
+  { id: 'fable', name: 'Storyteller', demo: '/voices/fable.wav' },
+  { id: 'onyx', name: 'News Anchor', demo: '/voices/onyx.wav' },
+  { id: 'nova', name: 'Assistant', demo: '/voices/nova.wav' },
+  { id: 'shimmer', name: 'Young', demo: '/voices/shimmer.wav' },
+  { id: 'coral', name: 'Friendly', demo: '/voices/coral.wav' },
+  { id: 'sage', name: 'Elder', demo: '/voices/sage.wav' },
+  { id: 'ash', name: 'Pro', demo: '/voices/ash.wav' }
+];
 
-    const startTime = Date.now();
-    const response = await openai.audio.speech.create({
-      model: "tts-1",
-      voice: "alloy",
-      input: text,
-    });
-    const endTime = Date.now();
+// Primero definimos las opciones de video disponibles
+const VIDEO_OPTIONS = [
+  { id: 'minecraft', name: 'Minecraft', src: '/videos/minecraft-vertical.mp4' },
+  { id: 'subway', name: 'Subway Surfers', src: '/videos/subway-vertical.mp4' }
+];
 
-    const audioBlob = await response.blob();
-    const duration = endTime - startTime;
-    const size = audioBlob.size;
-    const cost = (text.length / 1000) * 0.015; // $0.015 per 1K characters
-
-    console.log('🎉 Speech generated successfully!');
-    console.log('📊 Stats:', {
-      duration: `${duration}ms`,
-      size: `${(size / 1024).toFixed(2)}KB`,
-      characters: text.length,
-      estimatedCost: `$${cost.toFixed(4)}`,
-    });
-
-    return URL.createObjectURL(audioBlob);
-  } catch (error) {
-    console.error('❌ Error generating speech:', error);
-    return null;
-  }
-};
-
-// Añadir esta función helper antes del handleDownload
-const wrapText = (
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  x: number,
-  y: number,
-  maxWidth: number,
-  lineHeight: number
-) => {
-  const words = text.split(' ');
-  let line = '';
-  let currentY = y;
-
-  for (const word of words) {
-    const testLine = line + word + ' ';
-    const metrics = ctx.measureText(testLine);
-
-    if (metrics.width > maxWidth) {
-      ctx.fillText(line, x, currentY);
-      line = word + ' ';
-      currentY += lineHeight;
-    } else {
-      line = testLine;
-    }
-  }
-  ctx.fillText(line, x, currentY);
-  return currentY; // Retornar la altura final del texto
-};
+// Añadir después de VIDEO_OPTIONS
+const MUSIC_OPTIONS = [
+  { id: 'tense', name: 'Tense', src: '/songs/tense.mp3' },
+  { id: 'storytelling', name: 'Storytelling', src: '/songs/storytelling.mp3' }
+];
 
 export default function RedditVideoPage() {
+  // Mover el estado aquí, dentro del componente
+  const [selectedVoice, setSelectedVoice] = useState('alloy');
+
+  // Dentro del componente RedditVideoPage, añadir el estado:
+  const [selectedVideo, setSelectedVideo] = useState('minecraft');
+
+  // Añadir el estado para la música seleccionada después de selectedVideo
+  const [selectedMusic, setSelectedMusic] = useState('tense');
+
+  // Añadir referencia para el audio de preview
+  const musicPreviewRef = useRef<HTMLAudioElement | null>(null);
+  const [playingMusic, setPlayingMusic] = useState<string | null>(null);
+
+  // Añadir la función wrapText dentro del componente
+  const wrapText = (
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    maxWidth: number,
+    lineHeight: number
+  ) => {
+    const words = text.split(' ');
+    let line = '';
+    let currentY = y;
+
+    for (const word of words) {
+      const testLine = line + word + ' ';
+      const metrics = ctx.measureText(testLine);
+
+      if (metrics.width > maxWidth) {
+        ctx.fillText(line, x, currentY);
+        line = word + ' ';
+        currentY += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+    ctx.fillText(line, x, currentY);
+    return currentY; // Retornar la altura final del texto
+  };
+
+  // Mover la función generateSpeech dentro del componente
+  const generateSpeech = async (text: string) => {
+    try {
+      console.log('🎙️ Generating speech for:', text.substring(0, 50) + '...');
+      console.log('Using voice:', selectedVoice);
+
+      const startTime = Date.now();
+      const response = await openai.audio.speech.create({
+        model: "tts-1",
+        voice: selectedVoice,
+        input: text,
+      });
+      const endTime = Date.now();
+
+      const audioBlob = await response.blob();
+      const duration = endTime - startTime;
+      const size = audioBlob.size;
+      const cost = (text.length / 1000) * 0.015;
+
+      console.log('🎉 Speech generated successfully!');
+      console.log('📊 Stats:', {
+        duration: `${duration}ms`,
+        size: `${(size / 1024).toFixed(2)}KB`,
+        characters: text.length,
+        estimatedCost: `$${cost.toFixed(4)}`,
+      });
+
+      return URL.createObjectURL(audioBlob);
+    } catch (error) {
+      console.error('❌ Error generating speech:', error);
+      return null;
+    }
+  };
+
   const [currentStep, setCurrentStep] = useState(1);
   const [redditUrl, setRedditUrl] = useState("https://www.reddit.com/r/Money/comments/1hjrq5o/is_there_an_end_to_the_want");
   const [isLoading, setIsLoading] = useState(false);
@@ -137,7 +176,6 @@ export default function RedditVideoPage() {
   const [isPrerendering, setIsPrerendering] = useState(false);
   const [prerenderProgress, setPrerenderProgress] = useState(0);
 
-
   // Añadir una referencia al video y al canvas
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -165,10 +203,15 @@ export default function RedditVideoPage() {
   // Añadir una ref para la duración total
   const totalDurationRef = useRef<number>(0);
 
-  // Añadir estas referencias y estados
-  const framesRef = useRef<HTMLImageElement[]>([]);
-  const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
-  const [isLoadingFrames, setIsLoadingFrames] = useState(false);
+  // Añadir nueva ref para el video de fondo
+  const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Añadir al inicio del componente
+  const [previewFrames, setPreviewFrames] = useState<string[]>([]);
+
+  // Añadir nuevo estado para la voz que se está reproduciendo
+  const [playingVoice, setPlayingVoice] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const isValidRedditUrl = (url: string) => {
     const redditPattern = /^https?:\/\/(www\.)?reddit\.com\/r\/[\w-]+\/comments\/[\w-]+\/.*/;
@@ -233,30 +276,41 @@ export default function RedditVideoPage() {
     }
   };
 
+  // Añadir esta función después de las interfaces
+  const calculateApproximateDuration = (text: string): number => {
+    // Una aproximación básica: ~3 caracteres por segundo
+    return text.length / 16;
+  };
+
+  // Modificar la función toggleComment
   const toggleComment = (index: number) => {
     setSelectedComments(prev => {
+      // Si ya está seleccionado, simplemente lo removemos
       if (prev.includes(index)) {
-        // Si ya está seleccionado, lo removemos y reordenamos los demás
-        const newSelected = prev.filter(i => i !== index);
-        return newSelected;
-      } else {
-        // Si no está seleccionado, lo añadimos al final
-        return [...prev, index];
+        return prev.filter(i => i !== index);
       }
+
+      // Calcular la duración total con el nuevo comentario
+      let totalText = storyData!.title; // Incluir el título
+      const newSelected = [...prev, index];
+      newSelected.forEach(i => {
+        totalText += storyData!.commentsList[i].content;
+      });
+
+      const approximateDuration = calculateApproximateDuration(totalText);
+
+      // Si excede 60 segundos, mostrar advertencia
+      if (approximateDuration > 60) {
+        //alert("⚠️ Warning: The selected content may create a video longer than 60 seconds. The video will be automatically trimmed to 60 seconds.");
+      }
+
+      return newSelected;
     });
   };
 
   const handlePlayPause = () => {
     setIsVideoPlaying(!isVideoPlaying);
 
-    // Reproducir o pausar los audios
-    if (!isVideoPlaying) {
-      // Si vamos a empezar a reproducir
-      playAllAudiosSequentially();
-    } else {
-      // Si vamos a pausar
-      pauseAllAudios();
-    }
   };
 
   useEffect(() => {
@@ -272,7 +326,7 @@ export default function RedditVideoPage() {
           setCurrentMessageIndex((prev) => prev + 1);
         } else {
           setIsPlaying(false);
-          setCurrentMessageIndex(-1);
+          setCurrentMessageIndex(0);
         }
       }, duration);
     }
@@ -377,100 +431,228 @@ export default function RedditVideoPage() {
     return totalDuration;
   };
 
-  // Ajustar la duración del video generado
+  // Modify the generateVideo function
   const generateVideo = async () => {
-    console.log('🎬 Starting high quality video generation...');
-    setIsGenerating(true);
-    setProgress(0);
-
     try {
-      // 1. Crear un canvas de alta resolución
-      const canvas = new OffscreenCanvas(1920, 3840); // 4K vertical
-      const ctx = canvas.getContext('2d', {
-        alpha: false,
-        willReadFrequently: true
-      });
-      if (!ctx) throw new Error('Failed to get canvas context');
+      setIsGenerating(true);
+      setProgress(0);
 
-      // 2. Pre-cargar el video de fondo
+      // 1. Load FFmpeg
+      console.log('🔧 Loading FFmpeg...');
+      const ffmpeg = new FFmpeg();
+
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
+      });
+
+      console.log('✅ FFmpeg loaded successfully');
+
+      // 2. Generate audio files
+      console.log('🎙️ Generating audio files...');
+      const newAudioFiles: typeof audioFiles = {};
+      let audioDuration = 0;
+
+      // Generate title audio
+      const titleAudioUrl = await generateSpeech(storyData!.title);
+      if (titleAudioUrl) {
+        const titleAudio = new Audio(titleAudioUrl);
+        await new Promise<void>((resolve) => {
+          titleAudio.addEventListener('loadedmetadata', () => {
+            newAudioFiles['title'] = {
+              audio: titleAudioUrl,
+              text: storyData!.title,
+              duration: titleAudio.duration
+            };
+            audioDuration += titleAudio.duration;
+            resolve();
+          });
+        });
+      }
+
+      // Generate comment audios
+      for (let i = 0; i < selectedComments.length; i++) {
+        const comment = storyData!.commentsList[selectedComments[i]];
+        const audioUrl = await generateSpeech(comment.content);
+        if (audioUrl) {
+          const audio = new Audio(audioUrl);
+          await new Promise<void>((resolve) => {
+            audio.addEventListener('loadedmetadata', () => {
+              newAudioFiles[`comment_${i}`] = {
+                audio: audioUrl,
+                text: comment.content,
+                duration: audio.duration
+              };
+              audioDuration += audio.duration;
+              resolve();
+            });
+          });
+        }
+        setProgress((i + 1) / (selectedComments.length * 2) * 50);
+      }
+
+      setAudioFiles(newAudioFiles);
+      setPreviewDuration(audioDuration);
+
+      // 3. Generate video with comments
+      console.log('🎬 Generating video with comments...');
+      const canvas = document.createElement('canvas');
+      canvas.width = 1080;
+      canvas.height = 1920;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Could not get canvas context');
+
+      // Create background video
       const backgroundVideo = document.createElement('video');
-      backgroundVideo.src = '/minecraft-vertical.mp4';
+      backgroundVideo.src = VIDEO_OPTIONS.find(v => v.id === selectedVideo)?.src || '/videos/minecraft-vertical.mp4';
       backgroundVideo.muted = true;
-      await new Promise<void>((resolve) => {
-        backgroundVideo.onloadeddata = () => resolve();
+      backgroundVideo.loop = true;
+
+      // Wait for video to load
+      await new Promise((resolve) => {
+        backgroundVideo.onloadeddata = resolve;
         backgroundVideo.load();
       });
 
-      // 3. Inicializar FFmpeg
-      const ffmpeg = new FFmpeg();
-      await ffmpeg.load();
-      console.log('✅ FFmpeg loaded');
+      // Setup recording
+      const stream = canvas.captureStream(30);
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp9',
+        videoBitsPerSecond: 8000000
+      });
 
-      // 4. Calcular frames totales (20fps * duración)
-      const fps = 20;
-      const duration = generateVideoDuration();
-      const totalFrames = fps * duration;
+      const chunks: Blob[] = [];
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
 
-      // 5. Generar y guardar cada frame
-      for (let frame = 0; frame < totalFrames; frame++) {
-        // Calcular tiempo actual y mensaje correspondiente
-        const currentTime = frame / fps;
-        const messageIndex = Math.floor(currentTime / (audioFiles[`comment_${messageIndex}`]?.duration || 3));
+      // Start recording
+      mediaRecorder.start(1000);
+      await backgroundVideo.play();
 
-        // Posicionar el video en el tiempo correcto
-        backgroundVideo.currentTime = currentTime % backgroundVideo.duration;
-        await new Promise(r => setTimeout(r, 10)); // Esperar a que el video se actualice
+      // Render frames
+      const totalDuration = audioDuration * 1000; // Convert to milliseconds
+      const startTime = Date.now();
+      let lastVideoReset = 0;
 
-        // Dibujar frame
-        ctx.drawImage(backgroundVideo, 0, 0, canvas.width, canvas.height);
+      const renderFrame = () => {
+        const currentTime = Date.now() - startTime;
 
-        if (messageIndex <= selectedComments.length) {
-          drawMessage(ctx, messageIndex, isDarkMode, storyData, selectedComments);
+        if (currentTime >= totalDuration) {
+          mediaRecorder.stop();
+          return;
         }
 
-        // Convertir canvas a PNG de alta calidad
-        const blob = await canvas.convertToBlob({
-          type: 'image/png',
-          quality: 1
-        });
+        // Reset background video if needed
+        if (currentTime - lastVideoReset >= backgroundVideo.duration * 1000) {
+          backgroundVideo.currentTime = 0;
+          lastVideoReset = currentTime;
+        }
 
-        // Guardar frame
-        const frameData = await blob.arrayBuffer();
-        await ffmpeg.writeFile(`frame${frame.toString().padStart(6, '0')}.png`, new Uint8Array(frameData));
+        // Draw background video
+        ctx.drawImage(backgroundVideo, 0, 0, canvas.width, canvas.height);
 
-        // Actualizar progreso
-        const progress = (frame / totalFrames) * 100;
-        setProgress(progress);
-        console.log(`📊 Rendering progress: ${progress.toFixed(1)}%`);
+        // Calculate current message
+        const timeInSeconds = currentTime / 1000;
+        let accumulatedTime = 0;
+        let messageIndex = -1;
+
+        // Check title timing
+        if (newAudioFiles['title']) {
+          if (timeInSeconds < newAudioFiles['title'].duration) {
+            messageIndex = 0;
+          }
+          accumulatedTime += newAudioFiles['title'].duration;
+        }
+
+        // Check comments timing
+        for (let i = 0; i < selectedComments.length; i++) {
+          const audioKey = `comment_${i}`;
+          if (newAudioFiles[audioKey]) {
+            if (timeInSeconds >= accumulatedTime &&
+                timeInSeconds < accumulatedTime + newAudioFiles[audioKey].duration) {
+              messageIndex = i + 1;
+              break;
+            }
+            accumulatedTime += newAudioFiles[audioKey].duration;
+          }
+        }
+
+        // Draw message if needed
+        if (messageIndex >= 0) {
+          drawMessage(ctx, messageIndex, isDarkMode, storyData!, selectedComments);
+        }
+
+        setProgress(Math.min((currentTime / totalDuration) * 100, 99));
+        requestAnimationFrame(renderFrame);
+      };
+
+      // Start rendering
+      renderFrame();
+
+      // Wait for recording to finish
+      const videoBlob = await new Promise<Blob>((resolve) => {
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          resolve(blob);
+        };
+      });
+
+      // 4. Process with FFmpeg
+      console.log('📝 Processing final video...');
+      await ffmpeg.writeFile('video.webm', new Uint8Array(await videoBlob.arrayBuffer()));
+
+      // Write audio files
+      const audioInputs: string[] = [];
+      let inputIndex = 1;
+
+      for (const [key, value] of Object.entries(newAudioFiles)) {
+        const response = await fetch(value.audio);
+        const audioData = await response.arrayBuffer();
+        await ffmpeg.writeFile(`${key}.mp3`, new Uint8Array(audioData));
+        audioInputs.push(`[${inputIndex}:a]`);
+        inputIndex++;
       }
 
-      // 6. Generar video de alta calidad con FFmpeg
-      console.log('🎥 Generating final video...');
+      // Write background music
+      const musicResponse = await fetch(MUSIC_OPTIONS.find(m => m.id === selectedMusic)?.src || '');
+      const musicData = await musicResponse.arrayBuffer();
+      await ffmpeg.writeFile('background_music.mp3', new Uint8Array(musicData));
+
+      // Create filter for concatenating all audio
+      const concatFilter = audioInputs.join('');
+      const filterComplex = `${concatFilter}concat=n=${audioInputs.length}:v=0:a=1[speech];[${inputIndex}:a]volume=0.03,aloop=loop=-1:size=2147483647[music];[speech][music]amix=inputs=2[aout]`;
+
+      // Execute FFmpeg
       await ffmpeg.exec([
-        '-framerate', '30',
-        '-i', 'frame%06d.png',
-        '-c:v', 'libx264',
-        '-preset', 'veryslow', // Máxima calidad
-        '-crf', '17', // Calidad casi sin pérdida (0-51, menor es mejor)
-        '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart',
+        '-i', 'video.webm',
+        ...Object.keys(newAudioFiles).flatMap(file => ['-i', `${file}.mp3`]),
+        '-i', 'background_music.mp3',
+        '-filter_complex', filterComplex,
+        '-map', '0:v',
+        '-map', '[aout]',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-shortest',
         'output.mp4'
       ]);
 
-      // 7. Leer el video final
-      const outputData = await ffmpeg.readFile('output.mp4');
-      const videoBlob = new Blob([outputData], { type: 'video/mp4' });
-      setPrerenderedVideo(videoBlob);
+      // Read final video
+      const data = await ffmpeg.readFile('output.mp4');
+      const finalVideo = new Blob([data], { type: 'video/mp4' });
+      setPrerenderedVideo(finalVideo);
 
-      console.log('✅ High quality video generated successfully!');
-      console.log(`📊 Final video size: ${(videoBlob.size / (1024 * 1024)).toFixed(2)}MB`);
+      setCurrentStep(4);
+      setProgress(100);
+      console.log('✅ Video generated successfully!');
 
     } catch (error) {
       console.error('❌ Error generating video:', error);
-      alert('Failed to generate video. Please try again.');
+      alert('Error generating video. Please try again.');
     } finally {
       setIsGenerating(false);
-      setProgress(100);
     }
   };
 
@@ -517,7 +699,7 @@ export default function RedditVideoPage() {
   // Iniciar reproducción automática cuando se generen los audios
   useEffect(() => {
     if (audioFiles.title && currentStep === 4) {
-      playAllAudiosSequentially();
+
     }
   }, [audioFiles, currentStep]);
 
@@ -597,7 +779,7 @@ export default function RedditVideoPage() {
     const ctx = canvas?.getContext('2d');
     const video = videoRef.current;
 
-    if (!ctx || !video || !storyData || !audioFiles) return;
+    if (!ctx || !video || !storyData) return;
 
     let animationFrameId: number;
     let startTime: number | null = null;
@@ -606,35 +788,32 @@ export default function RedditVideoPage() {
       if (!startTime) startTime = timestamp;
       const elapsed = timestamp - startTime;
 
-      // Calcular qué mensaje mostrar basado en el tiempo transcurrido
-      let currentTime = 0;
+      // Dibujar el frame actual del video
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      // Calcular qué mensaje mostrar
+      let currentTime = elapsed / 1000; // convertir a segundos
       let messageToShow = -1;
 
-      // Primero verificar el título
+      // Verificar el título
       if (audioFiles['title']) {
-        if (elapsed < audioFiles['title'].duration * 1000) {
+        if (currentTime < audioFiles['title'].duration) {
           messageToShow = 0;
         }
-        currentTime += audioFiles['title'].duration * 1000;
+        currentTime -= audioFiles['title'].duration;
       }
 
-      // Luego verificar cada comentario
+      // Verificar cada comentario
       for (let i = 0; i < selectedComments.length; i++) {
         const audioKey = `comment_${i}`;
-        if (audioFiles[audioKey] && elapsed >= currentTime && elapsed < currentTime + audioFiles[audioKey].duration * 1000) {
-          messageToShow = i + 1;
-          break;
-        }
         if (audioFiles[audioKey]) {
-          currentTime += audioFiles[audioKey].duration * 1000;
+          if (currentTime >= 0 && currentTime < audioFiles[audioKey].duration) {
+            messageToShow = i + 1;
+            break;
+          }
+          currentTime -= audioFiles[audioKey].duration;
         }
       }
-
-      // Actualizar el índice del mensaje actual
-      setCurrentMessageIndex(messageToShow);
-
-      // Dibujar el frame
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
       // Dibujar el mensaje actual si hay uno
       if (messageToShow >= 0) {
@@ -648,13 +827,17 @@ export default function RedditVideoPage() {
     };
 
     if (isVideoPlaying) {
+      video.play();
       animationFrameId = requestAnimationFrame(animate);
+    } else {
+      video.pause();
     }
 
     return () => {
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
       }
+      video.pause();
     };
   }, [isVideoPlaying, storyData, selectedComments, audioFiles, isDarkMode]);
 
@@ -792,26 +975,6 @@ export default function RedditVideoPage() {
     };
   }, []);
 
-  useEffect(() => {
-    // Cargar FFmpeg al inicio
-    const loadFFmpeg = async () => {
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-      const ffmpeg = new FFmpeg();
-      try {
-        // Cargar los archivos necesarios de FFmpeg
-        await ffmpeg.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        });
-        console.log('✅ FFmpeg loaded successfully');
-      } catch (error) {
-        console.error('❌ Error loading FFmpeg:', error);
-      }
-    };
-
-    loadFFmpeg();
-  }, []);
-
   // Modificar la función handleSeek
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
@@ -894,7 +1057,7 @@ export default function RedditVideoPage() {
 
         // Crear elementos de video y canvas ocultos
         const hiddenVideo = document.createElement('video');
-        hiddenVideo.src = '/minecraft-vertical.mp4';
+        hiddenVideo.src = VIDEO_OPTIONS.find(v => v.id === selectedVideo)?.src || '/videos/minecraft-vertical.mp4';
         hiddenVideo.muted = true;
         hiddenVideoRef.current = hiddenVideo;
 
@@ -942,8 +1105,12 @@ export default function RedditVideoPage() {
           if (!ctx || !storyData || messageStats.length === 0) return;
           if (isPaused && !needsResume) return;
 
+          // Calcular el frame actual usando módulo
+          const frameIndex = currentFrameIndex % framesRef.current.length;
+          const currentFrame = framesRef.current[frameIndex];
+
           // Dibujar el frame actual
-          ctx.drawImage(hiddenVideo, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
+          ctx.drawImage(currentFrame, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
 
           // Calcular el tiempo actual
           const currentTime = Date.now() - startTimeRef.current;
@@ -1061,7 +1228,7 @@ export default function RedditVideoPage() {
       const url = URL.createObjectURL(prerenderedVideo);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `reddit-video-${Date.now()}.webm`;
+      a.download = `reddit-video-${Date.now()}.mp4`;
       a.click();
       URL.revokeObjectURL(url);
 
@@ -1175,6 +1342,25 @@ export default function RedditVideoPage() {
       console.log('✅ Download started');
       setDownloadProgress(100);
 
+      // Modificar dentro de handleDownloadMixed, después de escribir los archivos de audio
+      // Escribir el archivo de música de fondo
+      const musicResponse = await fetch(MUSIC_OPTIONS.find(m => m.id === selectedMusic)?.src || '');
+      const musicData = await musicResponse.arrayBuffer();
+      await ffmpeg.writeFile('background_music.mp3', new Uint8Array(musicData));
+
+      // Modificar el comando de FFmpeg para incluir la música de fondo
+      await ffmpeg.exec([
+        '-i', 'video.webm',
+        '-i', 'combined_audio.mp3',
+        '-i', 'background_music.mp3',
+        '-filter_complex', '[1:a]volume=2[a1];[2:a]volume=0.03,aloop=loop=-1:size=2147483647[a2];[a1][a2]amix=inputs=2[aout]',
+        '-c:v', 'copy',
+        '-map', '0:v:0',
+        '-map', '[aout]',
+        '-shortest',
+        'output.mp4'
+      ]);
+
     } catch (error) {
       console.error('❌ Error creating video with TTS:', error);
       alert('Error creating video with TTS. Please try again.');
@@ -1183,37 +1369,46 @@ export default function RedditVideoPage() {
     }
   };
 
+  // Modificar el useEffect inicial para que empiece en el título
+  useEffect(() => {
+    if (currentStep === 3 && storyData) {
+      // Cargar un frame para el título y uno para cada comentario
+      const messages = [storyData.title, ...selectedComments.map(i => storyData.commentsList[i].content)];
+      const frames = messages.map((_, index) => {
+        // Usar frames espaciados uniformemente del 1 al 20
+        const minFrame = 1;
+        const maxFrame = 20;
+        const frameRange = maxFrame - minFrame;
+        const frameNumber = Math.floor((index / (messages.length - 1)) * frameRange + minFrame);
+        // Formatear el número con padding de ceros (001, 002, etc)
+        return frameNumber.toString().padStart(3, '0');
+      });
+
+      // Actualizar el path de los frames según el video seleccionado
+      const videoType = selectedVideo === 'minecraft' ? 'minecraft' : 'subway';
+      setPreviewFrames(frames.map(num => `/frames/${videoType}/${num}.jpg`));
+      setCurrentMessageIndex(0);
+    }
+  }, [currentStep, storyData, selectedComments, selectedVideo]); // Añadir selectedVideo como dependencia
+
   // Modificar el botón en el paso 3 para usar la nueva función
   const renderStep3Button = () => (
-    <div className="flex gap-3">
-      <button
-        onClick={generateAllAudios}
-        className={`bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-          isGenerating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-700'
-        }`}
-        disabled={isGenerating}
-      >
-        {isGenerating ? (
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            {progress > 0 ? `${Math.round(progress)}%` : 'Generating...'}
-          </div>
-        ) : (
-          'Generate Audio'
-        )}
-      </button>
-
-      <button
-        id='generate-video-button'
-        onClick={handleGenerateVideo}
-        className={`bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-          isReadyToRecord ? 'hover:bg-blue-700' : 'opacity-50 cursor-not-allowed'
-        }`}
-        disabled={!isReadyToRecord || isPrerendering}
-      >
-        {isReadyToRecord ? 'Generate Video' : 'Loading...'}
-      </button>
-    </div>
+    <button
+      onClick={generateVideo}
+      className={`bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+        isGenerating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'
+      }`}
+      disabled={isGenerating}
+    >
+      {isGenerating ? (
+        <div className="flex items-center gap-2">
+          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          {progress > 0 ? `${Math.round(progress)}%` : 'Generating...'}
+        </div>
+      ) : (
+        'Generate Video'
+      )}
+    </button>
   );
 
   // Añadir pantalla de pre-renderizado
@@ -1342,7 +1537,7 @@ export default function RedditVideoPage() {
         ) {
           // Intentar cargar el video de fondo
           const video = document.createElement('video');
-          video.src = '/minecraft-vertical.mp4';
+          video.src = VIDEO_OPTIONS.find(v => v.id === selectedVideo)?.src || '/videos/minecraft-vertical.mp4';
           await new Promise((resolve, reject) => {
             video.onloadeddata = resolve;
             video.onerror = reject;
@@ -1358,7 +1553,7 @@ export default function RedditVideoPage() {
     };
 
     checkIfReady();
-  }, [selectedComments.length, storyData, messageStats.length, avatarIndices.length]);
+  }, [selectedComments.length, storyData, messageStats.length, avatarIndices.length, selectedVideo]);
 
   // Modificar el useEffect que maneja la reproducción automática
   useEffect(() => {
@@ -1414,152 +1609,59 @@ export default function RedditVideoPage() {
     };
   }, [isPrerendering, prerenderProgress]);
 
-  // Añadir esta función para cargar los frames
-  const loadFrames = async () => {
-    setIsLoadingFrames(true);
-    const frames: HTMLImageElement[] = [];
-
-    try {
-      // Cargar los 150 frames (o el número que tengas)
-      for (let i = 1; i <= 150; i++) {
-        const img = new Image();
-        img.src = `/frames/ezgif-frame-${i.toString().padStart(3, '0')}.jpg`;
-        await new Promise((resolve, reject) => {
-          img.onload = resolve;
-          img.onerror = reject;
-        });
-        frames.push(img);
-      }
-
-      console.log(`✅ Loaded ${frames.length} frames successfully`);
-      framesRef.current = frames;
-      setIsLoadingFrames(false);
-    } catch (error) {
-      console.error('❌ Error loading frames:', error);
-      setIsLoadingFrames(false);
-    }
-  };
-
-  // Modificar el useEffect que maneja el canvas y los frames
+  // Modificar el useEffect que maneja la preview
   useEffect(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
+    if (currentStep === 3 && storyData) {
+      // Cargar un frame para el título y uno para cada comentario
+      const messages = [storyData.title, ...selectedComments.map(i => storyData.commentsList[i].content)];
+      const frames = messages.map((_, index) => {
+        // Usar frames espaciados uniformemente del 1 al 20
+        const minFrame = 1;
+        const maxFrame = 20;
+        const frameRange = maxFrame - minFrame;
+        const frameNumber = Math.floor((index / (messages.length - 1)) * frameRange + minFrame);
+        // Formatear el número con padding de ceros (001, 002, etc)
+        return frameNumber.toString().padStart(3, '0');
+      });
 
-    if (!ctx || !storyData || !framesRef.current.length) return;
+      // Actualizar el path de los frames según el video seleccionado
+      const videoType = selectedVideo === 'minecraft' ? 'minecraft' : 'subway';
+      setPreviewFrames(frames.map(num => `/frames/${videoType}/${num}.jpg`));
 
-    let animationFrameId: number;
-    let lastFrameTime = 0;
-    const fps = 20; // Ajustar a 20 FPS
-    const frameInterval = 1000 / fps;
-
-    const drawFrame = (timestamp: number) => {
-      if (timestamp - lastFrameTime >= frameInterval) {
-        // Limpiar el canvas
+      // Dibujar el primer mensaje (título)
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (ctx && currentMessageIndex >= 0) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // Dibujar el frame actual
-        const currentFrame = framesRef.current[currentFrameIndex];
-        ctx.drawImage(currentFrame, 0, 0, canvas.width, canvas.height);
-
-        // Dibujar el overlay y el contenido actual
-        if (currentMessageIndex >= 0) {
-          // Aquí va el código existente para dibujar el contenido
-          // ...
-        }
-
-        // Actualizar el último tiempo de frame
-        lastFrameTime = timestamp;
-
-        // Avanzar al siguiente frame si está reproduciendo
-        if (isVideoPlaying) {
-          setCurrentFrameIndex(prev =>
-            prev + 1 >= framesRef.current.length ? 0 : prev + 1
-          );
-        }
+        drawMessage(ctx, currentMessageIndex, isDarkMode, storyData, selectedComments);
       }
+    }
+  }, [currentStep, storyData, selectedComments, selectedVideo]); // Añadir selectedVideo como dependencia
 
-      animationFrameId = requestAnimationFrame(drawFrame);
-    };
-
-    animationFrameId = requestAnimationFrame(drawFrame);
-
-    // Cleanup
-    return () => {
-      if (animationFrameId) {
-        cancelAnimationFrame(animationFrameId);
-      }
-    };
-  }, [currentFrameIndex, currentMessageIndex, storyData, isVideoPlaying]);
-
-  // Añadir useEffect para cargar los frames cuando se entra al paso 3
+  // Añadir useEffect para actualizar el canvas cuando cambia el mensaje
   useEffect(() => {
-    if (currentStep === 3) {
-      loadFrames();
-    }
-  }, [currentStep]);
-
-  // Añadir función para generar todos los audios
-  const generateAllAudios = async () => {
-    try {
-      setIsGenerating(true);
-      setProgress(0);
-      const newAudioFiles: typeof audioFiles = {};
-      let totalDuration = 0;
-
-      // Generar audio para el título
-      console.log('🎙️ Generating audio for title...');
-      const titleAudioUrl = await generateSpeech(storyData!.title);
-      if (titleAudioUrl) {
-        const titleAudio = new Audio(titleAudioUrl);
-        await new Promise(resolve => {
-          titleAudio.addEventListener('loadedmetadata', () => {
-            newAudioFiles['title'] = {
-              audio: titleAudioUrl,
-              text: storyData!.title,
-              duration: titleAudio.duration
-            };
-            totalDuration += titleAudio.duration;
-            resolve(null);
-          });
-        });
-      }
-
-      // Generar audio para cada comentario seleccionado
-      for (let i = 0; i < selectedComments.length; i++) {
-        const comment = storyData!.commentsList[selectedComments[i]];
-        console.log(`🎙️ Generating audio for comment ${i + 1}/${selectedComments.length}...`);
-
-        const audioUrl = await generateSpeech(comment.content);
-        if (audioUrl) {
-          const audio = new Audio(audioUrl);
-          await new Promise(resolve => {
-            audio.addEventListener('loadedmetadata', () => {
-              newAudioFiles[`comment_${i}`] = {
-                audio: audioUrl,
-                text: comment.content,
-                duration: audio.duration
-              };
-              totalDuration += audio.duration;
-              resolve(null);
-            });
-          });
+    if (currentStep === 3 && storyData) {
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (currentMessageIndex >= 0) {
+          drawMessage(ctx, currentMessageIndex, isDarkMode, storyData, selectedComments);
         }
-        setProgress((i + 1) / (selectedComments.length + 1) * 100);
       }
-
-      setAudioFiles(newAudioFiles);
-      setPreviewDuration(totalDuration);
-      console.log('✅ All audio files generated successfully!');
-      console.log('📊 Total duration:', totalDuration.toFixed(2), 'seconds');
-
-    } catch (error) {
-      console.error('❌ Error generating audio files:', error);
-      alert('Error generating audio files. Please try again.');
-    } finally {
-      setIsGenerating(false);
-      setProgress(0);
     }
-  };
+  }, [currentMessageIndex, isDarkMode, currentStep, storyData, selectedComments]);
+
+  // Añadir al inicio del componente, junto con los otros useEffect
+  useEffect(() => {
+    return () => {
+      // Cleanup de la música de preview
+      if (musicPreviewRef.current) {
+        musicPreviewRef.current.pause();
+        musicPreviewRef.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-8">
@@ -1722,6 +1824,32 @@ export default function RedditVideoPage() {
                 ))}
               </div>
               <div className="sticky bottom-4 bg-white p-4 border-t mt-6">
+                {selectedComments.length > 0 && (
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
+                      <span>Estimated Duration:</span>
+                      <span className={`font-medium ${
+                        calculateApproximateDuration(
+                          storyData.title +
+                          selectedComments.map(i => storyData.commentsList[i].content).join('')
+                        ) > 60 ? 'text-yellow-600' : 'text-gray-900'
+                      }`}>
+                        {calculateApproximateDuration(
+                          storyData.title +
+                          selectedComments.map(i => storyData.commentsList[i].content).join('')
+                        ).toFixed(1)}s
+                      </span>
+                    </div>
+                    {calculateApproximateDuration(
+                      storyData.title +
+                      selectedComments.map(i => storyData.commentsList[i].content).join('')
+                    ) > 60 && (
+                      <p className="text-xs text-yellow-600 bg-yellow-50 p-2 rounded">
+                        ⚠️ The selected content may create a video longer than 60 seconds.
+                      </p>
+                    )}
+                  </div>
+                )}
                 <button
                   onClick={() => setCurrentStep(3)}
                   className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
@@ -1745,62 +1873,55 @@ export default function RedditVideoPage() {
               <div className="sticky top-4">
                 <h3 className="font-medium mb-4">Preview</h3>
                 <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden">
-                  {isLoadingFrames ? (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span>Loading frames...</span>
-                    </div>
-                  ) : (
-                    <canvas
-                      ref={canvasRef}
-                      className="absolute inset-0 w-full h-full"
-                      width={1080}
-                      height={1920}
+                  {/* Frame de fondo */}
+                  {previewFrames.length > 0 && currentMessageIndex >= 0 && (
+                    <img
+                      src={previewFrames[currentMessageIndex]}
+                      className="absolute inset-0 w-full h-full object-cover"
+                      alt={`Preview frame ${currentMessageIndex + 1}`}
                     />
                   )}
 
-                  {/* Añadir controles de video */}
+                  {/* Canvas para los mensajes */}
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 w-full h-full"
+                    width={1080}
+                    height={1920}
+                  />
+
+                  {/* Flechas de navegación */}
+                  <div className="absolute inset-y-0 left-0 right-0 flex items-center justify-between px-4 pointer-events-none">
+                    {/* Flecha izquierda */}
+                    <button
+                      onClick={() => setCurrentMessageIndex(prev => Math.max(0, prev - 1))}
+                      className="w-10 h-10 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/75 transition-colors pointer-events-auto"
+                      disabled={currentMessageIndex <= 0}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+                      </svg>
+                    </button>
+
+                    {/* Flecha derecha */}
+                    <button
+                      onClick={() => setCurrentMessageIndex(prev => Math.min(selectedComments.length, prev + 1))}
+                      className="w-10 h-10 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/75 transition-colors pointer-events-auto"
+                      disabled={currentMessageIndex >= selectedComments.length}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {/* Indicador de mensaje actual */}
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 p-4">
-                    <div className="flex items-center gap-4">
-                      {/* Botón Play/Pause */}
-                      <button
-                        onClick={handlePlayPause}
-                        className="text-white hover:text-gray-200"
-                      >
-                        {isVideoPlaying ? (
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
-                          </svg>
-                        ) : (
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
-                          </svg>
-                        )}
-                      </button>
-
-                      {/* Tiempo actual */}
-                      <span className="text-white text-sm">
-                        {Math.floor(previewCurrentTime)}s
-                      </span>
-
-                      {/* Seekbar */}
-                      <input
-                        type="range"
-                        min="0"
-                        max={previewDuration}
-                        value={previewCurrentTime}
-                        onChange={handleSeek}
-                        className="flex-1 h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
-                      />
-
-                      {/* Duración total */}
-                      <span className="text-white text-sm">
-                        {`${previewDuration}s`}
-                      </span>
+                    <div className="text-white text-sm text-center font-medium">
+                      {currentMessageIndex === 0 ? 'Title' : `Comment ${currentMessageIndex}`} ({currentMessageIndex + 1} / {selectedComments.length + 1})
                     </div>
                   </div>
                 </div>
-
-
               </div>
             </div>
 
@@ -1813,57 +1934,197 @@ export default function RedditVideoPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Voice
                     </label>
-                    <select className="w-full px-3 py-2 border border-gray-300 rounded-lg">
-                      <option>Male (US)</option>
-                      <option>Female (US)</option>
-                      <option>Male (UK)</option>
-                      <option>Female (UK)</option>
-                    </select>
+                    <div className="flex flex-wrap gap-2">
+                      {VOICE_OPTIONS.map((voice) => (
+                        <div
+                          key={voice.id}
+                          className="relative group"
+                        >
+                          <button
+                            onClick={() => setSelectedVoice(voice.id)}
+                            className={`h-12 px-3 rounded-lg border flex items-center gap-2 transition-all ${
+                              selectedVoice === voice.id
+                                ? 'border-blue-500 bg-blue-50 text-blue-700'
+                                : 'border-gray-200 hover:border-gray-300'
+                            }`}
+                          >
+                            <span className="font-medium whitespace-nowrap">{voice.name}</span>
+                            {selectedVoice === voice.id && (
+                              <div className="w-2 h-2 rounded-full bg-blue-500" />
+                            )}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+
+                              // Si hay un audio reproduciéndose, detenerlo
+                              if (audioRef.current) {
+                                audioRef.current.pause();
+                                audioRef.current = null;
+                              }
+
+                              // Si la voz que se está reproduciendo es la misma, pausarla
+                              if (playingVoice === voice.id) {
+                                setPlayingVoice(null);
+                                return;
+                              }
+
+                              // Reproducir la nueva voz
+                              const audio = new Audio(voice.demo);
+                              audioRef.current = audio;
+
+                              audio.play()
+                                .then(() => {
+                                  setPlayingVoice(voice.id);
+                                  // Cuando termine el audio
+                                  audio.onended = () => {
+                                    setPlayingVoice(null);
+                                    audioRef.current = null;
+                                  };
+                                })
+                                .catch(err => console.log('Error playing audio:', err));
+                            }}
+                            className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            {playingVoice === voice.id ? (
+                              // Ícono de pausa
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="w-2 h-2">
+                                <path fillRule="evenodd" d="M6.75 5.25a.75.75 0 01.75-.75H9a.75.75 0 01.75.75v13.5a.75.75 0 01-.75.75H7.5a.75.75 0 01-.75-.75V5.25zm7 0a.75.75 0 01.75-.75h1.5a.75.75 0 01.75.75v13.5a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75V5.25z" clipRule="evenodd" />
+                              </svg>
+                            ) : (
+                              // Ícono de play
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="w-2 h-2">
+                                <path d="M8 5v14l11-7z" />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Background Video
                     </label>
-                    <select className="w-full px-3 py-2 border border-gray-300 rounded-lg">
-                      <option>Minecraft</option>
-                      <option>Subway Surfers</option>
-                      <option>Parkour</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Voice Speed
-                    </label>
-                    <div className="flex items-center gap-4">
-                      <input
-                        type="range"
-                        min="0.5"
-                        max="2"
-                        step="0.1"
-                        defaultValue="1"
-                        className="flex-1"
-                      />
-                      <span className="text-sm text-gray-600 w-12">1.0x</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      {VIDEO_OPTIONS.map((video) => (
+                        <button
+                          key={video.id}
+                          onClick={() => setSelectedVideo(video.id)}
+                          className={`relative h-24 rounded-lg border overflow-hidden group ${
+                            selectedVideo === video.id
+                              ? 'border-blue-500 ring-2 ring-blue-500/20'
+                              : 'border-gray-200 hover:border-gray-300'
+                          }`}
+                        >
+                          {/* Video preview */}
+                          <video
+                            src={video.src}
+                            className="absolute inset-0 w-full h-full object-cover"
+                            muted
+                            loop
+                            playsInline
+                            onMouseEnter={(e) => e.currentTarget.play()}
+                            onMouseLeave={(e) => e.currentTarget.pause()}
+                          />
+                          {/* Overlay con el nombre */}
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-black/0 flex items-end p-2">
+                            <span className="text-white text-sm font-medium">{video.name}</span>
+                          </div>
+                          {/* Indicador de selección */}
+                          {selectedVideo === video.id && (
+                            <div className="absolute top-2 right-2 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center">
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="w-3 h-3">
+                                <path fillRule="evenodd" d="M19.916 4.626a.75.75 0 01.208 1.04l-9 13.5a.75.75 0 01-1.154.114l-6-6a.75.75 0 011.06-1.06l5.353 5.353 8.493-12.739a.75.75 0 011.04-.208z" clipRule="evenodd" />
+                              </svg>
+                            </div>
+                          )}
+                        </button>
+                      ))}
                     </div>
                   </div>
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Background Music Volume
+                      Background Music
                     </label>
-                    <div className="flex items-center gap-4">
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        defaultValue="30"
-                        className="flex-1"
-                      />
-                      <span className="text-sm text-gray-600 w-12">30%</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      {MUSIC_OPTIONS.map((music) => (
+                        <button
+                          key={music.id}
+                          onClick={() => setSelectedMusic(music.id)}
+                          className={`relative h-12 rounded-lg border group flex items-center px-4 ${
+                            selectedMusic === music.id
+                              ? 'border-blue-500 ring-2 ring-blue-500/20'
+                              : 'border-gray-200 hover:border-gray-300'
+                          }`}
+                        >
+                          <div className="flex-1">
+                            <span className="text-sm font-medium">{music.name}</span>
+                          </div>
+
+                          {/* Botón de reproducción */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+
+                              // Si hay música reproduciéndose, detenerla
+                              if (musicPreviewRef.current) {
+                                musicPreviewRef.current.pause();
+                                musicPreviewRef.current = null;
+                                setPlayingMusic(null);
+                                return;
+                              }
+
+                              // Si es la misma música, detenerla
+                              if (playingMusic === music.id) {
+                                setPlayingMusic(null);
+                                return;
+                              }
+
+                              // Reproducir la nueva música
+                              const audio = new Audio(music.src);
+                              musicPreviewRef.current = audio;
+                              audio.volume = 0.5;
+
+                              audio.play()
+                                .then(() => {
+                                  setPlayingMusic(music.id);
+                                  // Cuando termine el audio
+                                  audio.onended = () => {
+                                    setPlayingMusic(null);
+                                    musicPreviewRef.current = null;
+                                  };
+                                })
+                                .catch(err => console.log('Error playing music:', err));
+                            }}
+                            className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center hover:bg-gray-200 transition-colors"
+                          >
+                            {playingMusic === music.id ? (
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                                <path fillRule="evenodd" d="M6.75 5.25a.75.75 0 01.75-.75H9a.75.75 0 01.75.75v13.5a.75.75 0 01-.75.75H7.5a.75.75 0 01-.75-.75V5.25zm7 0a.75.75 0 01.75-.75h1.5a.75.75 0 01.75.75v13.5a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75V5.25z" clipRule="evenodd" />
+                              </svg>
+                            ) : (
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                                <path fillRule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.573 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clipRule="evenodd" />
+                              </svg>
+                            )}
+                          </button>
+
+                          {/* Indicador de selección */}
+                          {selectedMusic === music.id && (
+                            <div className="absolute top-2 right-2 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center">
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="w-3 h-3">
+                                <path fillRule="evenodd" d="M19.916 4.626a.75.75 0 01.208 1.04l-9 13.5a.75.75 0 01-1.154.114l-6-6a.75.75 0 011.06-1.06l5.353 5.353 8.493-12.739a.75.75 0 011.04-.208z" clipRule="evenodd" />
+                              </svg>
+                            </div>
+                          )}
+                        </button>
+                      ))}
                     </div>
                   </div>
+
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1892,6 +2153,8 @@ export default function RedditVideoPage() {
                       </button>
                     </div>
                   </div>
+
+
                 </div>
               </div>
 
@@ -1911,109 +2174,122 @@ export default function RedditVideoPage() {
 
       {/* Step 4: Generate */}
       {currentStep === 4 && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h2 className="text-xl font-semibold mb-4">Generated Content</h2>
-          <div className="max-w-lg mx-auto">
-            <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden">
-              <canvas
-                ref={canvasRef}
-                className="absolute inset-0 w-full h-full"
-                width={1080}
-                height={1920}
-              />
-              {/* Controles */}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 p-4">
-                <div className="flex items-center gap-4">
-                  {/* Botón Play/Pause */}
-                  <button
-                    onClick={handlePlayPause}
-                    className="text-white hover:text-gray-200"
-                  >
-                    {isVideoPlaying ? (
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
-                      </svg>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8">
+          <div className="max-w-4xl mx-auto">
+            {/* Header */}
+            <div className="text-center mb-8">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                <h2 className="text-2xl font-bold">Video Generated Successfully!</h2>
+              </div>
+              <p className="text-gray-600">Your Reddit video is ready to download and share</p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* Video Preview */}
+              <div className="space-y-4">
+                <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                  <h3 className="text-sm font-medium text-gray-700 mb-3">Preview</h3>
+                  <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden shadow-lg">
+                    {prerenderedVideo ? (
+                      <video
+                        src={URL.createObjectURL(prerenderedVideo)}
+                        className="absolute inset-0 w-full h-full"
+                        controls
+                        playsInline
+                        controlsList="nodownload"
+                      />
                     ) : (
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
-                      </svg>
+                      <canvas
+                        ref={canvasRef}
+                        className="absolute inset-0 w-full h-full"
+                        width={1080}
+                        height={1920}
+                      />
                     )}
-                  </button>
-
-                  {/* Tiempo actual */}
-                  <span className="text-white text-sm">
-                    {Math.floor(previewCurrentTime)}s
-                  </span>
-
-                  {/* Seekbar */}
-                  <input
-                    type="range"
-                    min="0"
-                    max={previewDuration}
-                    value={previewCurrentTime}
-                    onChange={handleSeek}
-                    className="flex-1 h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
-                  />
-
-                  {/* Duración total */}
-                  <span className="text-white text-sm">
-                    {previewDuration}s
-                  </span>
+                  </div>
                 </div>
               </div>
-            </div>
-            <button
-              onClick={handleDownload}
-              disabled={isDownloading}
-              className="mt-4 w-full bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {isDownloading ? (
-                <>
-                  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+
+              {/* Download Options */}
+              <div className="space-y-6">
+                <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
+                  <h3 className="text-sm font-medium text-gray-700 mb-4">Download Options</h3>
+
+                  {/* Video Stats */}
+                  <div className="grid grid-cols-2 gap-4 mb-6">
+                    <div className="bg-white p-4 rounded-lg border border-gray-100">
+                      <p className="text-sm text-gray-500 mb-1">Resolution</p>
+                      <p className="text-lg font-semibold">1080 x 1920</p>
+                    </div>
+                    <div className="bg-white p-4 rounded-lg border border-gray-100">
+                      <p className="text-sm text-gray-500 mb-1">Duration</p>
+                      <p className="text-lg font-semibold">{Math.round(previewDuration)}s</p>
+                    </div>
+                  </div>
+
+                  {/* Download Buttons */}
+                  <div className="space-y-3">
+                    <button
+                      onClick={handleDownload}
+                      disabled={isDownloading}
+                      className="w-full bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-all flex items-center justify-center gap-2 shadow-sm"
+                    >
+                      {isDownloading ? (
+                        <>
+                          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          {downloadProgress > 0 ? `Downloading ${Math.round(downloadProgress)}%` : 'Processing...'}
+                        </>
+                      ) : (
+                        <>
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                          Download
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      //onClick={}
+                      //disabled={}
+                      className="w-full bg-white text-gray-700 px-6 py-3 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50 transition-all flex items-center justify-center gap-2 border border-gray-200"
+                    >
+                    Save To Library
+                    </button>
+                  </div>
+                </div>
+
+                {/* Share Options */}
+                <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
+                  <h3 className="text-sm font-medium text-gray-700 mb-4">Share</h3>
+                  <div className="grid grid-cols-3 gap-3">
+                    <button className="flex items-center justify-center gap-2 p-3 bg-[#1DA1F2] text-white rounded-lg hover:bg-[#1a8cd8] transition-colors">
+                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M23.953 4.57a10 10 0 01-2.825.775 4.958 4.958 0 002.163-2.723c-.951.555-2.005.959-3.127 1.184a4.92 4.92 0 00-8.384 4.482C7.69 8.095 4.067 6.13 1.64 3.162a4.822 4.822 0 00-.666 2.475c0 1.71.87 3.213 2.188 4.096a4.904 4.904 0 01-2.228-.616v.06a4.923 4.923 0 003.946 4.827 4.996 4.996 0 01-2.212.085 4.936 4.936 0 004.604 3.417 9.867 9.867 0 01-6.102 2.105c-.39 0-.779-.023-1.17-.067a13.995 13.995 0 007.557 2.209c9.053 0 13.998-7.496 13.998-13.985 0-.21 0-.42-.015-.63A9.935 9.935 0 0024 4.59z"/></svg>
+                      Twitter
+                    </button>
+                    <button className="flex items-center justify-center gap-2 p-3 bg-[#FF0000] text-white rounded-lg hover:bg-[#e50000] transition-colors">
+                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+                      YouTube
+                    </button>
+                    <button className="flex items-center justify-center gap-2 p-3 bg-[#25D366] text-white rounded-lg hover:bg-[#20bd5a] transition-colors">
+                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                      WhatsApp
+                    </button>
+                  </div>
+                </div>
+
+                {/* Back Button */}
+                <button
+                  onClick={() => setCurrentStep(3)}
+                  className="text-sm text-gray-600 hover:text-gray-900 flex items-center gap-1"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                   </svg>
-                  {downloadProgress < 100 ? `Processing ${Math.round(downloadProgress)}%` : 'Downloading...'}
-                </>
-              ) : (
-                'Download Video'
-              )}
-            </button>
-
-            {/* Añadir reproductor de audio */}
-            <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Preview Audio</h3>
-              <audio
-                controls
-                className="w-full"
-                src="/demo.mp3"
-              >
-                Your browser does not support the audio element.
-              </audio>
-
-              {/* Añadir botón para descargar video con audio */}
-              <button
-                onClick={handleDownloadMixed}
-                disabled={isDownloading}
-                className="mt-4 w-full bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {isDownloading ? (
-                  <>
-                    <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                    </svg>
-                    Download Video + Audio
-                  </>
-                )}
-              </button>
+                  Back to Customize
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2021,3 +2297,4 @@ export default function RedditVideoPage() {
     </div>
   );
 }
+

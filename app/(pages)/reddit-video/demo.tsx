@@ -112,7 +112,13 @@ export default function RedditVideoPage() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [loadedImages, setLoadedImages] = useState<string[]>([]);
-  const [audioFiles, setAudioFiles] = useState<{[key: string]: {audio: string, text: string}}>({});
+  const [audioFiles, setAudioFiles] = useState<{
+    [key: string]: {
+      audio: string;
+      text: string;
+      duration: number;
+    }
+  }>({});
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -159,10 +165,8 @@ export default function RedditVideoPage() {
   // Añadir una ref para la duración total
   const totalDurationRef = useRef<number>(0);
 
-  // Añadir estas referencias y estados
-  const framesRef = useRef<HTMLImageElement[]>([]);
-  const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
-  const [isLoadingFrames, setIsLoadingFrames] = useState(false);
+  // Añadir nueva ref para el video de fondo
+  const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const isValidRedditUrl = (url: string) => {
     const redditPattern = /^https?:\/\/(www\.)?reddit\.com\/r\/[\w-]+\/comments\/[\w-]+\/.*/;
@@ -242,28 +246,29 @@ export default function RedditVideoPage() {
 
   const handlePlayPause = () => {
     setIsVideoPlaying(!isVideoPlaying);
-    if (!isVideoPlaying && currentFrameIndex >= framesRef.current.length - 1) {
-      setCurrentFrameIndex(0); // Reiniciar si estamos al final
-    }
+
   };
 
   useEffect(() => {
-    let timer: NodeJS.Timeout;
+    let timer;
 
     if (isPlaying) {
+      const currentAudio = audioFiles[`comment_${currentMessageIndex}`];
+      const duration = currentAudio?.duration * 1000 || 3000; // Duración real o valor predeterminado
+
       timer = setTimeout(() => {
         const maxIndex = selectedComments.length;
         if (currentMessageIndex < maxIndex) {
-          setCurrentMessageIndex(prev => prev + 1);
+          setCurrentMessageIndex((prev) => prev + 1);
         } else {
           setIsPlaying(false);
           setCurrentMessageIndex(-1);
         }
-      }, 3000);
+      }, duration);
     }
 
     return () => clearTimeout(timer);
-  }, [currentMessageIndex, isPlaying, selectedComments.length]);
+  }, [currentMessageIndex, isPlaying, audioFiles]);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -322,170 +327,391 @@ export default function RedditVideoPage() {
     preloadImages();
   }, []);
 
-  // Añadir función para generar el video completo
+  const calculateTotalDuration = () => {
+    return Object.values(audioFiles).reduce(
+      (sum, file) => sum + (file.duration || 0),
+      0
+    );
+  };
+
+  useEffect(() => {
+    if (currentStep === 3) {
+      const totalDuration = calculateTotalDuration();
+      setPreviewDuration(totalDuration);
+
+      const video = videoRef.current;
+      if (video) {
+        video.currentTime = 0;
+        video.play();
+      }
+    }
+  }, [currentStep, audioFiles]);
+
+  // Modificar la función generateVideoDuration para usar duraciones reales
+  const generateVideoDuration = () => {
+    let totalDuration = 0;
+
+    // Añadir duración del título
+    if (audioFiles['title']) {
+      totalDuration += audioFiles['title'].duration;
+    }
+
+    // Añadir duración de cada comentario
+    selectedComments.forEach((_, index) => {
+      const audio = audioFiles[`comment_${index}`];
+      if (audio) {
+        totalDuration += audio.duration;
+      }
+    });
+
+    return totalDuration;
+  };
+
+  // Modificar la función generateVideo para incluir la generación de audio
   const generateVideo = async () => {
-    console.log('🎬 Starting high quality video generation...');
-    setIsGenerating(true);
-    setProgress(0);
-
     try {
-      // 1. Crear un canvas de alta resolución
-      const canvas = new OffscreenCanvas(1920, 3840); // 4K vertical
-      const ctx = canvas.getContext('2d', {
-        alpha: false,
-        willReadFrequently: true
-      });
-      if (!ctx) throw new Error('Failed to get canvas context');
+      setIsGenerating(true);
+      setProgress(0);
 
-      // 2. Pre-cargar el video de fondo
+      // 1. Cargar FFmpeg
+      console.log('🔧 Loading FFmpeg...');
+      const ffmpeg = new FFmpeg();
+
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
+      });
+
+      console.log('✅ FFmpeg loaded successfully');
+
+      // 2. Generar todos los audios
+      console.log('🎙️ Generating audio files...');
+      const newAudioFiles: typeof audioFiles = {};
+      let audioDuration = 0;
+
+      // Generar audio para el título
+      const titleAudioUrl = await generateSpeech(storyData!.title);
+      if (titleAudioUrl) {
+        const titleAudio = new Audio(titleAudioUrl);
+        await new Promise(resolve => {
+          titleAudio.addEventListener('loadedmetadata', () => {
+            newAudioFiles['title'] = {
+              audio: titleAudioUrl,
+              text: storyData!.title,
+              duration: titleAudio.duration
+            };
+            audioDuration += titleAudio.duration;
+            resolve(null);
+          });
+        });
+      }
+
+      // Generar audio para cada comentario
+      for (let i = 0; i < selectedComments.length; i++) {
+        const comment = storyData!.commentsList[selectedComments[i]];
+        const audioUrl = await generateSpeech(comment.content);
+        if (audioUrl) {
+          const audio = new Audio(audioUrl);
+          await new Promise(resolve => {
+            audio.addEventListener('loadedmetadata', () => {
+              newAudioFiles[`comment_${i}`] = {
+                audio: audioUrl,
+                text: comment.content,
+                duration: audio.duration
+              };
+              audioDuration += audio.duration;
+              resolve(null);
+            });
+          });
+        }
+        setProgress((i + 1) / (selectedComments.length * 2) * 50);
+      }
+
+      setAudioFiles(newAudioFiles);
+      setPreviewDuration(audioDuration);
+
+      // 3. Generar el video
+      console.log('🎬 Generating video...');
+      const canvas = document.createElement('canvas');
+      canvas.width = 1080;
+      canvas.height = 1920;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Could not get canvas context');
+
+      // Crear video de fondo con control preciso
       const backgroundVideo = document.createElement('video');
       backgroundVideo.src = '/minecraft-vertical.mp4';
       backgroundVideo.muted = true;
-      await new Promise<void>((resolve) => {
-        backgroundVideo.onloadeddata = () => resolve();
+      backgroundVideo.loop = true;
+
+      // Esperar a que el video esté completamente cargado
+      await new Promise((resolve) => {
+        backgroundVideo.onloadedmetadata = () => {
+          backgroundVideo.currentTime = 0;
+          resolve(null);
+        };
         backgroundVideo.load();
       });
 
-      // 3. Inicializar FFmpeg
-      const ffmpeg = new FFmpeg();
-      await ffmpeg.load();
-      console.log('✅ FFmpeg loaded');
+      // Configurar el MediaRecorder con framerate constante
+      const stream = canvas.captureStream(30); // 30fps fijo
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp9',
+        videoBitsPerSecond: 8000000
+      });
 
-      // 4. Calcular frames totales (30fps * duración)
-      const fps = 20;
-      const duration = (selectedComments.length + 1) * 3; // 3 segundos por mensaje
-      const totalFrames = fps * duration;
+      const chunks: Blob[] = [];
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
 
-      // 5. Generar y guardar cada frame
-      for (let frame = 0; frame < totalFrames; frame++) {
-        // Calcular tiempo actual y mensaje correspondiente
-        const currentTime = frame / fps;
-        const messageIndex = Math.floor(currentTime / 3);
+      const recordingPromise = new Promise<Blob>((resolve) => {
+        mediaRecorder.onstop = () => {
+          const videoBlob = new Blob(chunks, { type: 'video/webm' });
+          resolve(videoBlob);
+        };
+      });
 
-        // Posicionar el video en el tiempo correcto
-        backgroundVideo.currentTime = currentTime % backgroundVideo.duration;
-        await new Promise(r => setTimeout(r, 10)); // Esperar a que el video se actualice
+      // Iniciar grabación
+      mediaRecorder.start(1000);
+      await backgroundVideo.play();
 
-        // Dibujar frame
-        ctx.drawImage(backgroundVideo, 0, 0, canvas.width, canvas.height);
+      // Control preciso del tiempo
+      const totalDuration = audioDuration * 1000;
+      const startTime = Date.now();
+      let lastVideoReset = 0;
+      const VIDEO_DURATION = backgroundVideo.duration * 1000;
 
-        if (messageIndex <= selectedComments.length) {
-          drawMessage(ctx, messageIndex, isDarkMode, storyData, selectedComments);
+      const renderFrame = () => {
+        const currentTime = Date.now() - startTime;
+
+        if (currentTime >= totalDuration) {
+          mediaRecorder.stop();
+          return;
         }
 
-        // Convertir canvas a PNG de alta calidad
-        const blob = await canvas.convertToBlob({
-          type: 'image/png',
-          quality: 1
-        });
+        // Reiniciar video de fondo cuando sea necesario
+        const videoTime = currentTime - lastVideoReset;
+        if (videoTime >= VIDEO_DURATION) {
+          backgroundVideo.currentTime = 0;
+          lastVideoReset = currentTime;
+        }
 
-        // Guardar frame
-        const frameData = await blob.arrayBuffer();
-        await ffmpeg.writeFile(`frame${frame.toString().padStart(6, '0')}.png`, new Uint8Array(frameData));
+        // Asegurar que el video está en el tiempo correcto
+        const expectedVideoTime = (currentTime - lastVideoReset) / 1000;
+        if (Math.abs(backgroundVideo.currentTime - expectedVideoTime) > 0.1) {
+          backgroundVideo.currentTime = expectedVideoTime;
+        }
+
+        // Dibujar frame actual
+        ctx.drawImage(backgroundVideo, 0, 0, canvas.width, canvas.height);
+
+        // Calcular mensaje actual con precisión
+        const timeInSeconds = currentTime / 1000;
+        let accumulatedTime = 0;
+        let messageIndex = -1;
+
+        // Verificar título con tiempo preciso
+        if (newAudioFiles['title']) {
+          const titleDuration = newAudioFiles['title'].duration;
+          if (timeInSeconds < titleDuration) {
+            messageIndex = 0;
+          }
+          accumulatedTime += titleDuration;
+        }
+
+        // Verificar comentarios con tiempo preciso
+        for (let i = 0; i < selectedComments.length; i++) {
+          const audioKey = `comment_${i}`;
+          if (newAudioFiles[audioKey]) {
+            const commentDuration = newAudioFiles[audioKey].duration;
+            if (timeInSeconds >= accumulatedTime &&
+                timeInSeconds < accumulatedTime + commentDuration) {
+              messageIndex = i + 1;
+              break;
+            }
+            accumulatedTime += commentDuration;
+          }
+        }
+
+        // Dibujar mensaje si corresponde
+        if (messageIndex >= 0) {
+          drawMessage(ctx, messageIndex, isDarkMode, storyData!, selectedComments);
+        }
 
         // Actualizar progreso
-        const progress = (frame / totalFrames) * 100;
-        setProgress(progress);
-        console.log(`📊 Rendering progress: ${progress.toFixed(1)}%`);
+        setProgress(Math.min((currentTime / totalDuration) * 100, 99));
+
+        // Solicitar siguiente frame con timing preciso
+        requestAnimationFrame(renderFrame);
+      };
+
+      // Iniciar renderizado con timing preciso
+      requestAnimationFrame(renderFrame);
+
+      // Esperar a que termine la grabación
+      const videoBlob = await recordingPromise;
+      console.log('✅ Video generated successfully');
+
+      // 4. Mezclar video y audio
+      console.log('🎵 Mixing video and audio...');
+
+      // Escribir el video en FFmpeg
+      await ffmpeg.writeFile('video.webm', new Uint8Array(await videoBlob.arrayBuffer()));
+
+      // Escribir todos los archivos de audio
+      for (const [key, value] of Object.entries(newAudioFiles)) {
+        const response = await fetch(value.audio);
+        const audioData = await response.arrayBuffer();
+        await ffmpeg.writeFile(`${key}.mp3`, new Uint8Array(audioData));
       }
 
-      // 6. Generar video de alta calidad con FFmpeg
-      console.log('🎥 Generating final video...');
-      await ffmpeg.exec([
-        '-framerate', '30',
-        '-i', 'frame%06d.png',
-        '-c:v', 'libx264',
-        '-preset', 'veryslow', // Máxima calidad
-        '-crf', '17', // Calidad casi sin pérdida (0-51, menor es mejor)
-        '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart',
+      // Crear el archivo de concatenación de audio
+      const audioFiles = Object.keys(newAudioFiles);
+      const filterComplex = audioFiles
+        .map((_, i) => `[${i + 1}:a]`)
+        .join('') + `concat=n=${audioFiles.length}:v=0:a=1[aout]`;
+
+      // Construir el comando FFmpeg
+      const ffmpegCommand = [
+        '-i', 'video.webm',
+        ...audioFiles.flatMap(file => ['-i', `${file}.mp3`]),
+        '-filter_complex', filterComplex,
+        '-map', '0:v',
+        '-map', '[aout]',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-shortest',
         'output.mp4'
-      ]);
+      ];
 
-      // 7. Leer el video final
-      const outputData = await ffmpeg.readFile('output.mp4');
-      const videoBlob = new Blob([outputData], { type: 'video/mp4' });
-      setPrerenderedVideo(videoBlob);
+      // Ejecutar FFmpeg para combinar todo
+      console.log('🔄 Executing FFmpeg command:', ffmpegCommand.join(' '));
+      await ffmpeg.exec(ffmpegCommand);
 
-      console.log('✅ High quality video generated successfully!');
-      console.log(`📊 Final video size: ${(videoBlob.size / (1024 * 1024)).toFixed(2)}MB`);
+      // Leer el archivo final
+      const data = await ffmpeg.readFile('output.mp4');
+      const finalVideo = new Blob([data], { type: 'video/mp4' });
+      setPrerenderedVideo(finalVideo);
+
+      setCurrentStep(4);
+      setProgress(100);
+      console.log('✅ Video with audio generated successfully!');
 
     } catch (error) {
       console.error('❌ Error generating video:', error);
-      alert('Failed to generate video. Please try again.');
+      alert('Error generating video. Please try again.');
     } finally {
       setIsGenerating(false);
-      setProgress(100);
     }
   };
 
   // Añadir función para reproducir secuencialmente
-  const playAllAudios = async () => {
-    setCurrentMessageIndex(0);
+  const playAllAudiosSequentially = async () => {
+    // Reproducir el título primero
+    if (audioFiles['title']) {
+      const titleAudio = new Audio(audioFiles['title'].audio);
+      await titleAudio.play();
 
-    // Simular reproducción del título
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Simular reproducción de comentarios
-    for (let i = 0; i < selectedComments.length; i++) {
-      setCurrentMessageIndex(i + 1);
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Esperar a que termine el título
+      await new Promise(resolve => {
+        titleAudio.onended = resolve;
+      });
     }
 
-    // Reiniciar después de reproducir todo
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Reproducir cada comentario en orden
+    for (let i = 0; i < selectedComments.length; i++) {
+      const audioKey = `comment_${i}`;
+      if (audioFiles[audioKey]) {
+        const commentAudio = new Audio(audioFiles[audioKey].audio);
+        await commentAudio.play();
+
+        // Esperar a que termine cada comentario
+        await new Promise(resolve => {
+          commentAudio.onended = resolve;
+        });
+      }
+    }
+
+    // Cuando termine todo, resetear
+    setIsVideoPlaying(false);
     setCurrentMessageIndex(-1);
+  };
+
+  // Añadir función para pausar todos los audios
+  const pauseAllAudios = () => {
+    // Pausar todos los elementos de audio activos
+    document.querySelectorAll('audio').forEach(audio => {
+      audio.pause();
+    });
   };
 
   // Iniciar reproducción automática cuando se generen los audios
   useEffect(() => {
     if (audioFiles.title && currentStep === 4) {
-      playAllAudios();
+
     }
   }, [audioFiles, currentStep]);
 
   useEffect(() => {
-    if ((currentStep === 3 || currentStep === 4) && videoRef.current) {
-      const video = videoRef.current;
-
-      // Si estamos en el paso 3, usamos el video de minecraft
-      if (currentStep === 3) {
-        setVideoUrl('/minecraft-vertical.mp4');
-      }
-
-      // Duración exacta: 3 segundos por mensaje
-      const totalDuration = (selectedComments.length + 1) * 3;
+    if (currentStep === 3 || currentStep === 4) {
+      // Calcular la duración total real
+      const totalDuration = generateVideoDuration();
       setPreviewDuration(totalDuration);
 
-      const updatePreview = () => {
-        // Si el video supera la duración total, lo detenemos
-        if (video.currentTime >= totalDuration) {
-          video.pause();
-          setIsVideoPlaying(false);
-          setCurrentMessageIndex(-1);
-          return;
-        }
+      if (videoRef.current) {
+        const video = videoRef.current;
+        video.currentTime = 0;
 
-        setPreviewCurrentTime(video.currentTime);
+        const updatePreview = () => {
+          if (video.currentTime >= totalDuration) {
+            video.pause();
+            setIsVideoPlaying(false);
+            setCurrentMessageIndex(-1);
+            return;
+          }
 
-        // Actualizar mensaje cada 3 segundos
-        const messageIndex = Math.floor(video.currentTime / 3);
-        if (messageIndex <= selectedComments.length) {
-          setCurrentMessageIndex(messageIndex);
-        }
-      };
+          setPreviewCurrentTime(video.currentTime);
 
-      video.addEventListener('timeupdate', updatePreview);
-      video.play();
-      setIsVideoPlaying(true);
+          // Calcular qué mensaje mostrar basado en el tiempo actual
+          let accumulatedTime = 0;
+          let messageIndex = -1;
 
-      return () => {
-        video.removeEventListener('timeupdate', updatePreview);
-        setCurrentMessageIndex(-1);
-        setIsVideoPlaying(false);
-      };
+          // Verificar el título
+          if (audioFiles['title']) {
+            if (video.currentTime < audioFiles['title'].duration) {
+              messageIndex = 0;
+            }
+            accumulatedTime += audioFiles['title'].duration;
+          }
+
+          // Verificar cada comentario
+          for (let i = 0; i < selectedComments.length; i++) {
+            const audioKey = `comment_${i}`;
+            if (audioFiles[audioKey]) {
+              if (video.currentTime >= accumulatedTime &&
+                  video.currentTime < accumulatedTime + audioFiles[audioKey].duration) {
+                messageIndex = i + 1;
+                break;
+              }
+              accumulatedTime += audioFiles[audioKey].duration;
+            }
+          }
+
+          if (messageIndex <= selectedComments.length) {
+            setCurrentMessageIndex(messageIndex);
+          }
+        };
+
+        video.addEventListener('timeupdate', updatePreview);
+        return () => {
+          video.removeEventListener('timeupdate', updatePreview);
+        };
+      }
     }
-  }, [currentStep, selectedComments.length]);
+  }, [currentStep, selectedComments.length, audioFiles]);
 
   useEffect(() => {
     // Seleccionar avatares aleatorios para cada mensaje
@@ -507,170 +733,156 @@ export default function RedditVideoPage() {
 
     if (!ctx || !video || !storyData) return;
 
-    // Configurar dimensiones del canvas
-    canvas.width = 1080;
-    canvas.height = 1920;
+    let animationFrameId: number;
+    let startTime: number | null = null;
 
-    const drawFrame = () => {
-      // Dibujar el video
+    const animate = (timestamp: number) => {
+      if (!startTime) startTime = timestamp;
+      const elapsed = timestamp - startTime;
+
+      // Dibujar el frame actual del video
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Dibujar el overlay semitransparente
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Calcular qué mensaje mostrar
+      let currentTime = elapsed / 1000; // convertir a segundos
+      let messageToShow = -1;
 
-      // Dibujar el contenido actual si hay un mensaje seleccionado
-      if (currentMessageIndex >= 0 && storyData) {
-        // Configurar estilos base
-        const cardWidth = canvas.width * 0.8;
-        const cardX = (canvas.width - cardWidth) / 2;
-        let cardHeight = 200; // Altura base
-
-        // Ajustar altura según el contenido
-        const content = currentMessageIndex === 0
-          ? storyData.title
-          : storyData.commentsList[selectedComments[currentMessageIndex - 1]].content;
-        const lines = Math.ceil(content.length / 44);
-        cardHeight += currentMessageIndex === 0 ? lines * 80 : lines * 47;
-
-        const cardY = (canvas.height - cardHeight) / 2.3;
-
-        // Dibujar card background
-        ctx.fillStyle = isDarkMode ? '#1A1A1A' : '#FFFFFF';
-        ctx.strokeStyle = isDarkMode ? '#374151' : '#D1D5DB';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.roundRect(cardX, cardY, cardWidth, cardHeight, 12);
-        ctx.fill();
-        ctx.stroke();
-
-        // Usar imagen de usuario específica para cada mensaje
-        const userImage = new Image();
-        userImage.src = `/redditimages/${avatarIndices[currentMessageIndex] + 1}.jpg`;
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(cardX + 45, cardY + 45, 25, 0, Math.PI * 2);
-        ctx.clip();
-        ctx.drawImage(userImage, cardX + 20, cardY + 20, 50, 50);
-        ctx.restore();
-
-        if (currentMessageIndex === 0) {
-          // Dibujar post original
-          ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-          ctx.font = 'bold 36px Arial';
-          ctx.fillText(storyData.author, cardX + 80, cardY + 50);
-
-          ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
-          ctx.font = '28px Arial';
-          ctx.fillText(`${storyData.subreddit} • 25/12/2024`, cardX + 80, cardY + 90);
-
-          // Título
-          ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-          ctx.font = 'bold 45px Arial';
-          wrapText(ctx, storyData.title, cardX + 20, cardY + 165, cardWidth - 40, 50);
-        } else {
-          // Dibujar comentario
-          const comment = storyData.commentsList[selectedComments[currentMessageIndex - 1]];
-
-          ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-          ctx.font = 'bold 36px Arial';
-          ctx.fillText(`u/${comment.author}`, cardX + 80, cardY + 50);
-
-          ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
-          ctx.font = '28px Arial';
-          ctx.fillText('25/12/2024', cardX + 80, cardY + 90);
-
-          if (comment.isSubmitter) {
-            const opWidth = ctx.measureText('OP').width + 20;
-            ctx.fillStyle = isDarkMode ? '#1E40AF' : '#DBEAFE';
-            ctx.beginPath();
-            ctx.roundRect(cardX + 80 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 20, opWidth, 30, 15);
-            ctx.fill();
-
-            ctx.fillStyle = isDarkMode ? '#93C5FD' : '#2563EB';
-            ctx.font = 'bold 24px Arial';
-            ctx.fillText('OP', cardX + 85 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 45);
-          }
-
-          // Contenido del comentario
-          ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-          ctx.font = '38px Arial';
-          wrapText(ctx, comment.content, cardX + 20, cardY + 155, cardWidth - 40, 40);
+      // Verificar el título
+      if (audioFiles['title']) {
+        if (currentTime < audioFiles['title'].duration) {
+          messageToShow = 0;
         }
-
-        // Dibujar likes y comentarios
-        ctx.fillStyle = '#6B7280';
-        ctx.font = '28px Arial';
-        ctx.fillText(`❤️ ${messageStats[currentMessageIndex].likes.toLocaleString()}`, cardX + 20, cardY + cardHeight - 40);
-        ctx.fillText(`💬 ${messageStats[currentMessageIndex].comments.toLocaleString()}`, cardX + 150, cardY + cardHeight - 40);
+        currentTime -= audioFiles['title'].duration;
       }
 
-      requestAnimationFrame(drawFrame);
+      // Verificar cada comentario
+      for (let i = 0; i < selectedComments.length; i++) {
+        const audioKey = `comment_${i}`;
+        if (audioFiles[audioKey]) {
+          if (currentTime >= 0 && currentTime < audioFiles[audioKey].duration) {
+            messageToShow = i + 1;
+            break;
+          }
+          currentTime -= audioFiles[audioKey].duration;
+        }
+      }
+
+      // Dibujar el mensaje actual si hay uno
+      if (messageToShow >= 0) {
+        drawMessage(ctx, messageToShow, isDarkMode, storyData, selectedComments);
+      }
+
+      // Continuar la animación si el video está reproduciéndose
+      if (isVideoPlaying) {
+        animationFrameId = requestAnimationFrame(animate);
+      }
     };
 
-    // Iniciar la animación
-    video.play();
-    drawFrame();
+    if (isVideoPlaying) {
+      video.play();
+      animationFrameId = requestAnimationFrame(animate);
+    } else {
+      video.pause();
+    }
 
     return () => {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
       video.pause();
     };
-  }, [currentMessageIndex, isDarkMode, selectedComments, storyData, avatarIndices, messageStats, currentStep]);
-
-
+  }, [isVideoPlaying, storyData, selectedComments, audioFiles, isDarkMode]);
 
   // Función auxiliar para dibujar cada mensaje
-  const drawMessage = async (
+  const drawMessage = (
     ctx: CanvasRenderingContext2D,
     messageIndex: number,
+    isDarkMode: boolean,
     storyData: RedditData,
-    selectedComments: number[],
-    isDarkMode: boolean
+    selectedComments: number[]
   ) => {
-    const width = ctx.canvas.width;
-    const height = ctx.canvas.height;
-    const cardWidth = width * 0.8;
-    const cardX = (width - cardWidth) / 2;
+    // Configurar dimensiones de la tarjeta
+    const cardWidth = ctx.canvas.width * 0.8;
+    const cardX = (ctx.canvas.width - cardWidth) / 2;
+    let cardHeight = 200; // Altura base
+
+    // Ajustar altura según el contenido
+    const content = messageIndex === 0
+      ? storyData.title
+      : storyData.commentsList[selectedComments[messageIndex - 1]].content;
+    const lines = Math.ceil(content.length / 44);
+    cardHeight += messageIndex === 0 ? lines * 80 : lines * 47;
+
+    const cardY = (ctx.canvas.height - cardHeight) / 2.3;
+
+    // Dibujar card background
+    ctx.fillStyle = isDarkMode ? '#1A1A1A' : '#FFFFFF';
+    ctx.strokeStyle = isDarkMode ? '#374151' : '#D1D5DB';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(cardX, cardY, cardWidth, cardHeight, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    // Dibujar avatar
+    const avatarImg = new Image();
+    avatarImg.src = `/redditimages/${avatarIndices[messageIndex] + 1}.jpg`;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cardX + 45, cardY + 45, 25, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(avatarImg, cardX + 20, cardY + 20, 50, 50);
+    ctx.restore();
 
     if (messageIndex === 0) {
-      // Dibujar título
-      const cardHeight = 300;
-      const cardY = height * 0.3;
-
-      // Card background
-      ctx.fillStyle = isDarkMode ? '#1A1A1A' : '#FFFFFF';
-      ctx.fillRect(cardX, cardY, cardWidth, cardHeight);
-
-      // Texto del título
+      // Dibujar post original
       ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-      ctx.font = 'bold 40px Arial';
-      wrapText(ctx, storyData.title, cardX + 20, cardY + 80, cardWidth - 40, 50);
+      ctx.font = 'bold 36px Arial';
+      ctx.fillText(storyData.author, cardX + 80, cardY + 50);
 
-      // Metadata
       ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
-      ctx.font = '24px Arial';
-      ctx.fillText(storyData.author, cardX + 20, cardY + 40);
+      ctx.font = '28px Arial';
+      ctx.fillText(`${storyData.subreddit} • 25/12/2024`, cardX + 80, cardY + 90);
 
+      // Título
+      ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
+      ctx.font = 'bold 45px Arial';
+      wrapText(ctx, storyData.title, cardX + 20, cardY + 165, cardWidth - 40, 50);
     } else {
       // Dibujar comentario
       const comment = storyData.commentsList[selectedComments[messageIndex - 1]];
-      const cardHeight = 250;
-      const cardY = height * 0.3;
 
-      // Card background
-      ctx.fillStyle = isDarkMode ? '#1A1A1A' : '#FFFFFF';
-      ctx.fillRect(cardX, cardY, cardWidth, cardHeight);
-
-      // Texto del comentario
       ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-      ctx.font = '32px Arial';
-      wrapText(ctx, comment.content, cardX + 20, cardY + 80, cardWidth - 40, 40);
+      ctx.font = 'bold 36px Arial';
+      ctx.fillText(`u/${comment.author}`, cardX + 80, cardY + 50);
 
-      // Metadata
       ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
-      ctx.font = '24px Arial';
-      ctx.fillText(comment.author, cardX + 20, cardY + 40);
+      ctx.font = '28px Arial';
+      ctx.fillText('25/12/2024', cardX + 80, cardY + 90);
+
+      if (comment.isSubmitter) {
+        const opWidth = ctx.measureText('OP').width + 20;
+        ctx.fillStyle = isDarkMode ? '#1E40AF' : '#DBEAFE';
+        ctx.beginPath();
+        ctx.roundRect(cardX + 80 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 20, opWidth, 30, 15);
+        ctx.fill();
+
+        ctx.fillStyle = isDarkMode ? '#93C5FD' : '#2563EB';
+        ctx.font = 'bold 24px Arial';
+        ctx.fillText('OP', cardX + 85 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 45);
+      }
+
+      // Contenido del comentario
+      ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
+      ctx.font = '38px Arial';
+      wrapText(ctx, comment.content, cardX + 20, cardY + 155, cardWidth - 40, 40);
     }
+
+    // Dibujar likes y comentarios
+    ctx.fillStyle = '#6B7280';
+    ctx.font = '28px Arial';
+    ctx.fillText(`❤️ ${messageStats[messageIndex].likes.toLocaleString()}`, cardX + 20, cardY + cardHeight - 40);
+    ctx.fillText(`💬 ${messageStats[messageIndex].comments.toLocaleString()}`, cardX + 150, cardY + cardHeight - 40);
   };
 
   // Añadir este useEffect para manejar la visibilidad y cierre de página
@@ -715,293 +927,245 @@ export default function RedditVideoPage() {
     };
   }, []);
 
-  useEffect(() => {
-    // Cargar FFmpeg al inicio
-    const loadFFmpeg = async () => {
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-      const ffmpeg = new FFmpeg();
-      try {
-        // Cargar los archivos necesarios de FFmpeg
-        await ffmpeg.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        });
-        console.log('✅ FFmpeg loaded successfully');
-      } catch (error) {
-        console.error('❌ Error loading FFmpeg:', error);
-      }
-    };
-
-    loadFFmpeg();
-  }, []);
-
-  // Añadir función para manejar el seek
+  // Modificar la función handleSeek
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (videoRef.current) {
-      const time = parseFloat(e.target.value);
-      videoRef.current.currentTime = time;
-      setPreviewCurrentTime(time);
+    const time = parseFloat(e.target.value);
 
-      // Si el video está en el final y el usuario busca una nueva posición,
-      // debemos actualizar el estado de reproducción
-      if (!isVideoPlaying && time < videoRef.current.duration) {
-        videoRef.current.play();
-        setIsVideoPlaying(true);
+    // Calcular qué mensaje mostrar basado en el tiempo
+    let accumulatedTime = 0;
+    let messageIndex = -1;
+
+    // Verificar el título primero
+    if (audioFiles['title']) {
+      if (time < audioFiles['title'].duration) {
+        messageIndex = 0;
       }
+      accumulatedTime += audioFiles['title'].duration;
+    }
+
+    // Verificar cada comentario
+    for (let i = 0; i < selectedComments.length; i++) {
+      const audioKey = `comment_${i}`;
+      if (audioFiles[audioKey]) {
+        if (time >= accumulatedTime && time < accumulatedTime + audioFiles[audioKey].duration) {
+          messageIndex = i + 1;
+          break;
+        }
+        accumulatedTime += audioFiles[audioKey].duration;
+      }
+    }
+
+    // Actualizar el estado
+    setCurrentMessageIndex(messageIndex);
+    setPreviewCurrentTime(time);
+
+    // Actualizar el video si existe
+    if (videoRef.current) {
+      videoRef.current.currentTime = time;
     }
   };
 
-  // Modificar la función cuando se pasa del paso 3 al 4
+  // Modificar handleGenerateVideo para usar las duraciones correctas
   const handleGenerateVideo = async () => {
     if (!isReadyToRecord) return;
     console.log('🎥 Starting new video generation...');
-    console.log('📊 Initial chunks: []');
-
-    // Crear una referencia al contenedor que usaremos después
-    let currentContainer: HTMLElement | null = null;
 
     try {
-      // Limpiar cualquier estado previo
-      if (mediaRecorderRef.current?.state === 'recording') {
-        console.log('⏹️ Stopping previous recording...');
-        mediaRecorderRef.current.stop();
-      }
-      mediaRecorderRef.current = null;
-
-      // Limpiar cualquier contenedor anterior que pueda existir
-      const oldContainer = document.querySelector('[id^="hidden-recorder-container"]');
-      if (oldContainer) {
-        oldContainer.remove();
-      }
-
       setIsPrerendering(true);
       setPrerenderProgress(0);
       setIsPaused(false);
       setIsReadyToRecord(false);
+
+      // Calcular la duración total real basada en los audios
+      const totalDuration = generateVideoDuration();
+      totalDurationRef.current = totalDuration * 1000; // Convertir a milisegundos
       startTimeRef.current = Date.now();
-      totalDurationRef.current = (selectedComments.length + 1) * 3000;
 
-      // Crear un nuevo contenedor con ID único
-      const containerId = `hidden-recorder-container-${Date.now()}`;
-      currentContainer = document.createElement('div');
-      currentContainer.id = containerId;
-      currentContainer.style.position = 'absolute';
-      currentContainer.style.left = '-9999px';
-      currentContainer.style.top = '-9999px';
-      document.body.appendChild(currentContainer);
+      // Crear una referencia al contenedor que usaremos después
+      let currentContainer: HTMLElement | null = null;
 
-      // Crear elementos de video y canvas ocultos
-      const hiddenVideo = document.createElement('video');
-      hiddenVideo.src = '/minecraft-vertical.mp4';
-      hiddenVideo.muted = true;
-      hiddenVideo.crossOrigin = 'anonymous'; // Añadir esto para evitar problemas de CORS
-      hiddenVideoRef.current = hiddenVideo;
-
-      const hiddenCanvas = document.createElement('canvas');
-      hiddenCanvas.width = 1080;
-      hiddenCanvas.height = 1920;
-      const ctx = hiddenCanvas.getContext('2d');
-
-      currentContainer.appendChild(hiddenVideo);
-      currentContainer.appendChild(hiddenCanvas);
-
-      // Configurar la grabación con un nuevo array de chunks
-      const stream = hiddenCanvas.captureStream(60);
-      const chunks: Blob[] = [];
-      console.log('🔄 Reset chunks array to: []');
-
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9',
-        videoBitsPerSecond: 8000000,
-      });
-      mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunks.push(e.data);
-          console.log(`📝 New chunk added. Total chunks: ${chunks.length}`);
-          console.log(`📦 Current total size: ${(chunks.reduce((acc, chunk) => acc + chunk.size, 0) / (1024 * 1024)).toFixed(2)}MB`);
+      try {
+        // Limpiar cualquier estado previo
+        if (mediaRecorderRef.current?.state === 'recording') {
+          console.log('⏹️ Stopping previous recording...');
+          mediaRecorderRef.current.stop();
         }
-      };
+        mediaRecorderRef.current = null;
 
-      // Esperar a que el video se cargue
-      await new Promise<void>((resolve, reject) => {
-        hiddenVideo.onloadeddata = () => resolve();
-        hiddenVideo.onerror = () => reject(new Error('Failed to load video'));
-        hiddenVideo.load();
-      });
-
-      // Iniciar grabación
-      mediaRecorder.start(1000);
-      console.log('▶️ Recording started');
-      await hiddenVideo.play();
-
-      // Renderizar frames
-      const renderFrame = () => {
-        if (!ctx || !storyData || messageStats.length === 0) return;
-        if (isPaused && !needsResume) return;
-
-        // Dibujar el frame actual
-        ctx.drawImage(hiddenVideo, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
-
-        // Calcular el tiempo actual y el progreso
-        const currentTime = Date.now() - startTimeRef.current;
-        const progress = (currentTime / totalDurationRef.current) * 100;
-
-        // Si hemos superado la duración total, detener la grabación
-        if (currentTime >= totalDurationRef.current) {
-          mediaRecorder.stop();
-          return;
+        // Limpiar cualquier contenedor anterior que pueda existir
+        const oldContainer = document.querySelector('[id^="hidden-recorder-container"]');
+        if (oldContainer) {
+          oldContainer.remove();
         }
 
-        // Calcular el índice del mensaje actual
-        const messageIndex = Math.floor(currentTime / 3000);
+        // Crear un nuevo contenedor con ID único
+        const containerId = `hidden-recorder-container-${Date.now()}`;
+        currentContainer = document.createElement('div');
+        currentContainer.id = containerId;
+        currentContainer.style.position = 'absolute';
+        currentContainer.style.left = '-9999px';
+        currentContainer.style.top = '-9999px';
+        document.body.appendChild(currentContainer);
 
-        // Dibujar el mensaje actual
-        if (messageIndex <= selectedComments.length) {
-          // Configurar estilos base
-          const cardWidth = hiddenCanvas.width * 0.8;
-          const cardX = (hiddenCanvas.width - cardWidth) / 2;
-          let cardHeight = 200; // Altura base
+        // Crear elementos de video y canvas ocultos
+        const hiddenVideo = document.createElement('video');
+        hiddenVideo.src = '/minecraft-vertical.mp4';
+        hiddenVideo.muted = true;
+        hiddenVideoRef.current = hiddenVideo;
 
-          // Ajustar altura según el contenido
-          const content = messageIndex === 0
-            ? storyData.title
-            : storyData.commentsList[selectedComments[messageIndex - 1]].content;
-          const lines = Math.ceil(content.length / 44);
-          cardHeight += messageIndex === 0 ? lines * 80 : lines * 47;
+        const hiddenCanvas = document.createElement('canvas');
+        hiddenCanvas.width = 1080;
+        hiddenCanvas.height = 1920;
+        const ctx = hiddenCanvas.getContext('2d');
 
-          const cardY = (hiddenCanvas.height - cardHeight) / 2.3;
+        currentContainer.appendChild(hiddenVideo);
+        currentContainer.appendChild(hiddenCanvas);
 
-          // Dibujar card background
-          ctx.fillStyle = isDarkMode ? '#1A1A1A' : '#FFFFFF';
-          ctx.strokeStyle = isDarkMode ? '#374151' : '#D1D5DB';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.roundRect(cardX, cardY, cardWidth, cardHeight, 12);
-          ctx.fill();
-          ctx.stroke();
+        // Configurar la grabación con un nuevo array de chunks
+        const stream = hiddenCanvas.captureStream(60);
+        const chunks: Blob[] = [];
+        console.log('🔄 Reset chunks array to: []');
 
-          // Dibujar avatar
-          const avatarImg = new Image();
-          avatarImg.src = `/redditimages/${avatarIndices[messageIndex] + 1}.jpg`;
-          ctx.save();
-          ctx.beginPath();
-          ctx.arc(cardX + 45, cardY + 45, 25, 0, Math.PI * 2);
-          ctx.clip();
-          ctx.drawImage(avatarImg, cardX + 20, cardY + 20, 50, 50);
-          ctx.restore();
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'video/webm;codecs=vp9',
+          videoBitsPerSecond: 8000000,
+        });
+        mediaRecorderRef.current = mediaRecorder;
 
-          if (messageIndex === 0) {
-            // Dibujar post original
-            ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-            ctx.font = 'bold 36px Arial';
-            ctx.fillText(storyData.author, cardX + 80, cardY + 50);
-
-            ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
-            ctx.font = '28px Arial';
-            ctx.fillText(`${storyData.subreddit} • 25/12/2024`, cardX + 80, cardY + 90);
-
-            // Título
-            ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-            ctx.font = 'bold 45px Arial';
-            wrapText(ctx, storyData.title, cardX + 20, cardY + 165, cardWidth - 40, 50);
-          } else {
-            // Dibujar comentario
-            const comment = storyData.commentsList[selectedComments[messageIndex - 1]];
-
-            ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-            ctx.font = 'bold 36px Arial';
-            ctx.fillText(`u/${comment.author}`, cardX + 80, cardY + 50);
-
-            ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
-            ctx.font = '28px Arial';
-            ctx.fillText('25/12/2024', cardX + 80, cardY + 90);
-
-            if (comment.isSubmitter) {
-              const opWidth = ctx.measureText('OP').width + 20;
-              ctx.fillStyle = isDarkMode ? '#1E40AF' : '#DBEAFE';
-              ctx.beginPath();
-              ctx.roundRect(cardX + 80 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 20, opWidth, 30, 15);
-              ctx.fill();
-
-              ctx.fillStyle = isDarkMode ? '#93C5FD' : '#2563EB';
-              ctx.font = 'bold 24px Arial';
-              ctx.fillText('OP', cardX + 85 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 45);
-            }
-
-            // Contenido del comentario
-            ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-            ctx.font = '38px Arial';
-            wrapText(ctx, comment.content, cardX + 20, cardY + 155, cardWidth - 40, 40);
-          }
-
-          // Dibujar likes y comentarios
-          ctx.fillStyle = '#6B7280';
-          ctx.font = '28px Arial';
-          ctx.fillText(`❤️ ${messageStats[messageIndex].likes.toLocaleString()}`, cardX + 20, cardY + cardHeight - 40);
-          ctx.fillText(`💬 ${messageStats[messageIndex].comments.toLocaleString()}`, cardX + 150, cardY + cardHeight - 40);
-        }
-
-        // Actualizar el progreso solo si no está pausado
-        if (!isPaused) {
-          setPrerenderProgress(Math.min(progress, 99));
-        }
-
-        // Continuar renderizando si no hemos alcanzado la duración total
-        requestAnimationFrame(renderFrame);
-      };
-
-      // Modificar la promesa de finalización
-      await new Promise<void>((resolve) => {
-        mediaRecorder.onstop = async () => {
-          try {
-            console.log(`🔍 Checking final chunks. Count: ${chunks.length}`);
-            if (chunks.length > 0 && !isPaused) {
-              console.log(`📦 Creating final video from ${chunks.length} chunks`);
-              const totalSize = chunks.reduce((acc, chunk) => acc + chunk.size, 0);
-              console.log(`📊 Total chunks size before merge: ${(totalSize / (1024 * 1024)).toFixed(2)}MB`);
-
-              const finalBlob = new Blob(chunks, { type: 'video/webm' });
-              setPrerenderedVideo(finalBlob);
-              console.log(`💾 Final video size: ${(finalBlob.size / (1024 * 1024)).toFixed(2)}MB`);
-            } else {
-              console.log(`⚠️ No video created. Chunks: ${chunks.length}, isPaused: ${isPaused}`);
-            }
-            resolve();
-          } catch (error) {
-            console.error('❌ Error creating final video:', error);
-            resolve();
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            chunks.push(e.data);
+            console.log(`📝 New chunk added. Total chunks: ${chunks.length}`);
+            console.log(`📦 Current total size: ${(chunks.reduce((acc, chunk) => acc + chunk.size, 0) / (1024 * 1024)).toFixed(2)}MB`);
           }
         };
-        renderFrame();
-      });
 
-      setPrerenderProgress(100);
-      setCurrentStep(4);
+        // Esperar a que el video se cargue
+        await new Promise<void>((resolve, reject) => {
+          hiddenVideo.onloadeddata = () => resolve();
+          hiddenVideo.onerror = () => reject(new Error('Failed to load video'));
+          hiddenVideo.load();
+        });
 
+        // Iniciar grabación
+        mediaRecorder.start(1000);
+        console.log('▶️ Recording started');
+        await hiddenVideo.play();
+
+        // Renderizar frames
+        const renderFrame = () => {
+          if (!ctx || !storyData || messageStats.length === 0) return;
+          if (isPaused && !needsResume) return;
+
+          // Calcular el frame actual usando módulo
+          const frameIndex = currentFrameIndex % framesRef.current.length;
+          const currentFrame = framesRef.current[frameIndex];
+
+          // Dibujar el frame actual
+          ctx.drawImage(currentFrame, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
+
+          // Calcular el tiempo actual
+          const currentTime = Date.now() - startTimeRef.current;
+          const progress = (currentTime / totalDurationRef.current) * 100;
+
+          // Calcular qué mensaje mostrar basado en las duraciones reales
+          let accumulatedTime = 0;
+          let messageIndex = -1;
+
+          // Verificar el título
+          if (audioFiles['title']) {
+            if (currentTime < audioFiles['title'].duration * 1000) {
+              messageIndex = 0;
+            }
+            accumulatedTime += audioFiles['title'].duration * 1000;
+          }
+
+          // Verificar cada comentario
+          for (let i = 0; i < selectedComments.length; i++) {
+            const audioKey = `comment_${i}`;
+            if (audioFiles[audioKey]) {
+              if (currentTime >= accumulatedTime &&
+                  currentTime < accumulatedTime + audioFiles[audioKey].duration * 1000) {
+                messageIndex = i + 1;
+                break;
+              }
+              accumulatedTime += audioFiles[audioKey].duration * 1000;
+            }
+          }
+
+          // Dibujar el mensaje actual
+          if (messageIndex >= 0) {
+            drawMessage(ctx, messageIndex, isDarkMode, storyData, selectedComments);
+          }
+
+          // Actualizar progreso
+          if (!isPaused) {
+            setPrerenderProgress(Math.min(progress, 99));
+          }
+
+          // Detener si hemos superado la duración total
+          if (currentTime >= totalDurationRef.current) {
+            mediaRecorder.stop();
+            return;
+          }
+
+          requestAnimationFrame(renderFrame);
+        };
+
+        // Modificar la promesa de finalización
+        await new Promise<void>((resolve) => {
+          mediaRecorder.onstop = async () => {
+            try {
+              console.log(`🔍 Checking final chunks. Count: ${chunks.length}`);
+              if (chunks.length > 0 && !isPaused) {
+                console.log(`📦 Creating final video from ${chunks.length} chunks`);
+                const totalSize = chunks.reduce((acc, chunk) => acc + chunk.size, 0);
+                console.log(`📊 Total chunks size before merge: ${(totalSize / (1024 * 1024)).toFixed(2)}MB`);
+
+                const finalBlob = new Blob(chunks, { type: 'video/webm' });
+                setPrerenderedVideo(finalBlob);
+                console.log(`💾 Final video size: ${(finalBlob.size / (1024 * 1024)).toFixed(2)}MB`);
+              } else {
+                console.log(`⚠️ No video created. Chunks: ${chunks.length}, isPaused: ${isPaused}`);
+              }
+              resolve();
+            } catch (error) {
+              console.error('❌ Error creating final video:', error);
+              resolve();
+            }
+          };
+          renderFrame();
+        });
+
+        setPrerenderProgress(100);
+        setCurrentStep(4);
+
+      } catch (error) {
+        console.error('❌ Error pre-rendering video:', error);
+        console.log('💥 Recording failed, chunks will be discarded');
+        alert('Error generating video. Please try again.');
+      } finally {
+        // Limpiar todo en el finally
+        try {
+          if (currentContainer && document.body.contains(currentContainer)) {
+            currentContainer.remove();
+          }
+          if (!isPaused) {
+            if (hiddenVideoRef.current) {
+              hiddenVideoRef.current.pause();
+              hiddenVideoRef.current = null;
+            }
+            mediaRecorderRef.current = null;
+            setIsPrerendering(false);
+            setIsPaused(false);
+          }
+        } catch (cleanupError) {
+          console.error('Error during cleanup:', cleanupError);
+        }
+      }
     } catch (error) {
       console.error('❌ Error pre-rendering video:', error);
-      console.log('💥 Recording failed, chunks will be discarded');
       alert('Error generating video. Please try again.');
-    } finally {
-      // Limpiar todo en el finally
-      try {
-        if (currentContainer && document.body.contains(currentContainer)) {
-          currentContainer.remove();
-        }
-        if (!isPaused) {
-          if (hiddenVideoRef.current) {
-            hiddenVideoRef.current.pause();
-            hiddenVideoRef.current = null;
-          }
-          mediaRecorderRef.current = null;
-          setIsPrerendering(false);
-          setIsPaused(false);
-        }
-      } catch (cleanupError) {
-        console.error('Error during cleanup:', cleanupError);
-      }
     }
   };
 
@@ -1016,7 +1180,7 @@ export default function RedditVideoPage() {
       const url = URL.createObjectURL(prerenderedVideo);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `reddit-video-${Date.now()}.webm`;
+      a.download = `reddit-video-${Date.now()}.mp4`;
       a.click();
       URL.revokeObjectURL(url);
 
@@ -1141,14 +1305,20 @@ export default function RedditVideoPage() {
   // Modificar el botón en el paso 3 para usar la nueva función
   const renderStep3Button = () => (
     <button
-      id='generate-video-button'
-      onClick={handleGenerateVideo}
+      onClick={generateVideo}
       className={`bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-        isReadyToRecord ? 'hover:bg-blue-700' : 'opacity-50 cursor-not-allowed'
+        isGenerating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'
       }`}
-      disabled={!isReadyToRecord || isPrerendering}
+      disabled={isGenerating}
     >
-      {isReadyToRecord ? 'Generate Video' : 'Loading...'}
+      {isGenerating ? (
+        <div className="flex items-center gap-2">
+          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          {progress > 0 ? `${Math.round(progress)}%` : 'Generating...'}
+        </div>
+      ) : (
+        'Generate Video'
+      )}
     </button>
   );
 
@@ -1299,7 +1469,6 @@ export default function RedditVideoPage() {
   // Modificar el useEffect que maneja la reproducción automática
   useEffect(() => {
     if (currentStep === 3) {
-      // Mostrar el primer mensaje y activar reproducción automática
       setCurrentMessageIndex(0);
       setIsPlaying(true);
 
@@ -1308,8 +1477,17 @@ export default function RedditVideoPage() {
         video.currentTime = 0;
         video.play();
       }
+
+      // Calcular la duración total basada en los audios si están disponibles
+      if (Object.keys(audioFiles).length > 0) {
+        const totalDuration = Object.values(audioFiles).reduce(
+          (sum, file) => sum + file.duration,
+          0
+        );
+        setPreviewDuration(totalDuration);
+      }
     }
-  }, [currentStep]);
+  }, [currentStep, audioFiles]);
 
   // Modificar el useEffect que maneja el video y canvas para el paso 3
   useEffect(() => {
@@ -1341,90 +1519,6 @@ export default function RedditVideoPage() {
       }
     };
   }, [isPrerendering, prerenderProgress]);
-
-  // Añadir esta función para cargar los frames
-  const loadFrames = async () => {
-    setIsLoadingFrames(true);
-    const frames: HTMLImageElement[] = [];
-
-    try {
-      // Cargar los 150 frames (o el número que tengas)
-      for (let i = 1; i <= 150; i++) {
-        const img = new Image();
-        img.src = `/frames/ezgif-frame-${i.toString().padStart(3, '0')}.jpg`;
-        await new Promise((resolve, reject) => {
-          img.onload = resolve;
-          img.onerror = reject;
-        });
-        frames.push(img);
-      }
-
-      console.log(`✅ Loaded ${frames.length} frames successfully`);
-      framesRef.current = frames;
-      setIsLoadingFrames(false);
-    } catch (error) {
-      console.error('❌ Error loading frames:', error);
-      setIsLoadingFrames(false);
-    }
-  };
-
-  // Modificar el useEffect que maneja el canvas y los frames
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-
-    if (!ctx || !storyData || !framesRef.current.length) return;
-
-    let animationFrameId: number;
-    let lastFrameTime = 0;
-    const fps = 20; // Ajustar a 20 FPS
-    const frameInterval = 1000 / fps;
-
-    const drawFrame = (timestamp: number) => {
-      if (timestamp - lastFrameTime >= frameInterval) {
-        // Limpiar el canvas
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // Dibujar el frame actual
-        const currentFrame = framesRef.current[currentFrameIndex];
-        ctx.drawImage(currentFrame, 0, 0, canvas.width, canvas.height);
-
-        // Dibujar el overlay y el contenido actual
-        if (currentMessageIndex >= 0) {
-          // Aquí va el código existente para dibujar el contenido
-          // ...
-        }
-
-        // Actualizar el último tiempo de frame
-        lastFrameTime = timestamp;
-
-        // Avanzar al siguiente frame si está reproduciendo
-        if (isVideoPlaying) {
-          setCurrentFrameIndex(prev =>
-            prev + 1 >= framesRef.current.length ? 0 : prev + 1
-          );
-        }
-      }
-
-      animationFrameId = requestAnimationFrame(drawFrame);
-    };
-
-    animationFrameId = requestAnimationFrame(drawFrame);
-
-    // Cleanup
-    return () => {
-      if (animationFrameId) {
-        cancelAnimationFrame(animationFrameId);
-      }
-    };
-  }, [currentFrameIndex, currentMessageIndex, storyData, isVideoPlaying]);
-
-  // Añadir useEffect para cargar los frames cuando se entra al paso 3
-  useEffect(() => {
-    if (currentStep === 3) {
-      loadFrames();
-    }
-  }, [currentStep]);
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-8">
@@ -1610,18 +1704,12 @@ export default function RedditVideoPage() {
               <div className="sticky top-4">
                 <h3 className="font-medium mb-4">Preview</h3>
                 <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden">
-                  {isLoadingFrames ? (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span>Loading frames...</span>
-                    </div>
-                  ) : (
-                    <canvas
-                      ref={canvasRef}
-                      className="absolute inset-0 w-full h-full"
-                      width={1080}
-                      height={1920}
-                    />
-                  )}
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 w-full h-full"
+                    width={1080}
+                    height={1920}
+                  />
 
                   {/* Añadir controles de video */}
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 p-4">
@@ -1664,8 +1752,6 @@ export default function RedditVideoPage() {
                     </div>
                   </div>
                 </div>
-
-
               </div>
             </div>
 
@@ -1780,52 +1866,22 @@ export default function RedditVideoPage() {
           <h2 className="text-xl font-semibold mb-4">Generated Content</h2>
           <div className="max-w-lg mx-auto">
             <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden">
-              <canvas
-                ref={canvasRef}
-                className="absolute inset-0 w-full h-full"
-                width={1080}
-                height={1920}
-              />
-              {/* Controles */}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 p-4">
-                <div className="flex items-center gap-4">
-                  {/* Botón Play/Pause */}
-                  <button
-                    onClick={handlePlayPause}
-                    className="text-white hover:text-gray-200"
-                  >
-                    {isVideoPlaying ? (
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
-                      </svg>
-                    ) : (
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
-                      </svg>
-                    )}
-                  </button>
-
-                  {/* Tiempo actual */}
-                  <span className="text-white text-sm">
-                    {Math.floor(previewCurrentTime)}s
-                  </span>
-
-                  {/* Seekbar */}
-                  <input
-                    type="range"
-                    min="0"
-                    max={previewDuration}
-                    value={previewCurrentTime}
-                    onChange={handleSeek}
-                    className="flex-1 h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
-                  />
-
-                  {/* Duración total */}
-                  <span className="text-white text-sm">
-                    {previewDuration}s
-                  </span>
-                </div>
-              </div>
+              {prerenderedVideo ? (
+                <video
+                  src={URL.createObjectURL(prerenderedVideo)}
+                  className="absolute inset-0 w-full h-full"
+                  controls
+                  playsInline
+                  controlsList="nodownload"
+                />
+              ) : (
+                <canvas
+                  ref={canvasRef}
+                  className="absolute inset-0 w-full h-full"
+                  width={1080}
+                  height={1920}
+                />
+              )}
             </div>
             <button
               onClick={handleDownload}
@@ -1838,48 +1894,12 @@ export default function RedditVideoPage() {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  {downloadProgress < 100 ? `Processing ${Math.round(downloadProgress)}%` : 'Downloading...'}
+                  Downloading...
                 </>
               ) : (
                 'Download Video'
               )}
             </button>
-
-            {/* Añadir reproductor de audio */}
-            <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Preview Audio</h3>
-              <audio
-                controls
-                className="w-full"
-                src="/demo.mp3"
-              >
-                Your browser does not support the audio element.
-              </audio>
-
-              {/* Añadir botón para descargar video con audio */}
-              <button
-                onClick={handleDownloadMixed}
-                disabled={isDownloading}
-                className="mt-4 w-full bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {isDownloading ? (
-                  <>
-                    <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                    </svg>
-                    Download Video + Audio
-                  </>
-                )}
-              </button>
-            </div>
           </div>
         </div>
       )}
