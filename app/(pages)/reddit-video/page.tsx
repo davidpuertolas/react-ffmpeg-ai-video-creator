@@ -225,6 +225,9 @@ export default function RedditVideoPage() {
     size: null
   });
 
+  // Añadir al inicio del componente
+  const [avatarImages, setAvatarImages] = useState<{ [key: number]: HTMLImageElement }>({});
+
   const isValidRedditUrl = (url: string) => {
     const redditPattern = /^https?:\/\/(www\.)?reddit\.com\/r\/[\w-]+\/comments\/[\w-]+\/.*/;
     return redditPattern.test(url);
@@ -483,11 +486,37 @@ export default function RedditVideoPage() {
     });
   };
 
+  // Función para pre-cargar las imágenes
+  const preloadAvatarImages = async () => {
+    const loadImage = (index: number) => {
+      return new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.src = `/redditimages/${index + 1}.jpg`;
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+      });
+    };
+
+    try {
+      const images: { [key: number]: HTMLImageElement } = {};
+      await Promise.all(
+        avatarIndices.map(async (_, index) => {
+          images[index] = await loadImage(avatarIndices[index]);
+        })
+      );
+      setAvatarImages(images);
+    } catch (error) {
+      console.error('Error preloading avatar images:', error);
+    }
+  };
+
   const generateVideo = async () => {
     try {
-      console.log('🚀 Starting video generation process...');
       setIsGenerating(true);
       setProgress(0);
+
+      // Pre-cargar las imágenes antes de comenzar
+      await preloadAvatarImages();
 
       // 1. Load FFmpeg
       console.log('🔧 Loading FFmpeg...');
@@ -517,7 +546,7 @@ export default function RedditVideoPage() {
         const blob = await response.blob();
         const duration = await getAudioDuration(blob);
         audioFiles['title'] = { blob, duration };
-        totalDuration += duration + 0.5; // Añadir 0.5s de pausa
+        totalDuration += duration + 0.4; // Añadir 0.5s de pausa
         console.log('💾 Title audio duration:', duration.toFixed(2), 's');
       }
 
@@ -530,7 +559,7 @@ export default function RedditVideoPage() {
           const blob = await response.blob();
           const duration = await getAudioDuration(blob);
           audioFiles[`comment_${i}`] = { blob, duration };
-          totalDuration += duration + 0.5; // Añadir 0.5s de pausa
+          totalDuration += duration + 0.4; // Añadir 0.5s de pausa
           console.log(`💾 Comment ${i + 1} audio duration:`, duration.toFixed(2), 's');
         }
         setProgress(10 + (i + 1) / selectedComments.length * 30);
@@ -610,7 +639,7 @@ export default function RedditVideoPage() {
           start: currentTime,
           end: currentTime + audioFiles['title'].duration
         });
-        currentTime += audioFiles['title'].duration + 0.5; // Añadir 0.5s de pausa
+        currentTime += audioFiles['title'].duration + 0.4; // Añadir 0.5s de pausa
         totalDuration = currentTime; // Actualizar duración total
       }
 
@@ -622,7 +651,7 @@ export default function RedditVideoPage() {
             start: currentTime,
             end: currentTime + audio.duration
           });
-          currentTime += audio.duration + 0.5; // Añadir 0.5s de pausa
+          currentTime += audio.duration + 0.4; // Añadir 0.5s de pausa
           totalDuration = currentTime; // Actualizar duración total
         }
       }
@@ -869,7 +898,7 @@ export default function RedditVideoPage() {
     let animationFrameId: number;
     let startTime: number | null = null;
 
-    const animate = (timestamp: number) => {
+    const animate = async (timestamp: number) => {
       if (!startTime) startTime = timestamp;
       const elapsed = timestamp - startTime;
 
@@ -877,7 +906,7 @@ export default function RedditVideoPage() {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
       // Calcular qué mensaje mostrar
-      let currentTime = elapsed / 1000; // convertir a segundos
+      let currentTime = elapsed / 1000;
       let messageToShow = -1;
 
       // Verificar el título
@@ -902,7 +931,7 @@ export default function RedditVideoPage() {
 
       // Dibujar el mensaje actual si hay uno
       if (messageToShow >= 0) {
-        drawMessage(ctx, messageToShow, isDarkMode, storyData, selectedComments);
+        await drawMessage(ctx, messageToShow, isDarkMode, storyData, selectedComments);
       }
 
       // Continuar la animación si el video está reproduciéndose
@@ -927,7 +956,7 @@ export default function RedditVideoPage() {
   }, [isVideoPlaying, storyData, selectedComments, audioFiles, isDarkMode]);
 
   // Función auxiliar para dibujar cada mensaje
-  const drawMessage = (
+  const drawMessage = async (
     ctx: CanvasRenderingContext2D,
     messageIndex: number,
     isDarkMode: boolean,
@@ -948,74 +977,98 @@ export default function RedditVideoPage() {
 
     const cardY = (ctx.canvas.height - cardHeight) / 2.3;
 
-    // Dibujar card background
-    ctx.fillStyle = isDarkMode ? '#1A1A1A' : '#FFFFFF';
-    ctx.strokeStyle = isDarkMode ? '#374151' : '#D1D5DB';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(cardX, cardY, cardWidth, cardHeight, 12);
-    ctx.fill();
-    ctx.stroke();
+    // Función para dibujar todo el contenido del mensaje
+    const drawContent = () => {
+      // Dibujar card background
+      ctx.fillStyle = isDarkMode ? '#1A1A1A' : '#FFFFFF';
+      ctx.strokeStyle = isDarkMode ? '#374151' : '#D1D5DB';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(cardX, cardY, cardWidth, cardHeight, 12);
+      ctx.fill();
+      ctx.stroke();
 
-    // Dibujar avatar
-    const avatarImg = new Image();
-    avatarImg.src = `/redditimages/${avatarIndices[messageIndex] + 1}.jpg`;
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cardX + 45, cardY + 45, 25, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.drawImage(avatarImg, cardX + 20, cardY + 20, 50, 50);
-    ctx.restore();
+      if (messageIndex === 0) {
+        // Dibujar post original
+        ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
+        ctx.font = 'bold 36px Arial';
+        ctx.fillText(storyData.author, cardX + 80, cardY + 50);
 
-    if (messageIndex === 0) {
-      // Dibujar post original
-      ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-      ctx.font = 'bold 36px Arial';
-      ctx.fillText(storyData.author, cardX + 80, cardY + 50);
+        ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
+        ctx.font = '28px Arial';
+        ctx.fillText(`${storyData.subreddit} • 25/12/2024`, cardX + 80, cardY + 90);
 
-      ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
-      ctx.font = '28px Arial';
-      ctx.fillText(`${storyData.subreddit} • 25/12/2024`, cardX + 80, cardY + 90);
+        // Título
+        ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
+        ctx.font = 'bold 45px Arial';
+        wrapText(ctx, storyData.title, cardX + 20, cardY + 165, cardWidth - 40, 50);
+      } else {
+        // Dibujar comentario
+        const comment = storyData.commentsList[selectedComments[messageIndex - 1]];
 
-      // Título
-      ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-      ctx.font = 'bold 45px Arial';
-      wrapText(ctx, storyData.title, cardX + 20, cardY + 165, cardWidth - 40, 50);
-    } else {
-      // Dibujar comentario
-      const comment = storyData.commentsList[selectedComments[messageIndex - 1]];
+        ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
+        ctx.font = 'bold 36px Arial';
+        ctx.fillText(`u/${comment.author}`, cardX + 80, cardY + 50);
 
-      ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-      ctx.font = 'bold 36px Arial';
-      ctx.fillText(`u/${comment.author}`, cardX + 80, cardY + 50);
+        ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
+        ctx.font = '28px Arial';
+        ctx.fillText('25/12/2024', cardX + 80, cardY + 90);
 
-      ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
-      ctx.font = '28px Arial';
-      ctx.fillText('25/12/2024', cardX + 80, cardY + 90);
+        if (comment.isSubmitter) {
+          const opWidth = ctx.measureText('OP').width + 20;
+          ctx.fillStyle = isDarkMode ? '#1E40AF' : '#DBEAFE';
+          ctx.beginPath();
+          ctx.roundRect(cardX + 80 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 20, opWidth, 30, 15);
+          ctx.fill();
 
-      if (comment.isSubmitter) {
-        const opWidth = ctx.measureText('OP').width + 20;
-        ctx.fillStyle = isDarkMode ? '#1E40AF' : '#DBEAFE';
-        ctx.beginPath();
-        ctx.roundRect(cardX + 80 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 20, opWidth, 30, 15);
-        ctx.fill();
+          ctx.fillStyle = isDarkMode ? '#93C5FD' : '#2563EB';
+          ctx.font = 'bold 24px Arial';
+          ctx.fillText('OP', cardX + 85 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 45);
+        }
 
-        ctx.fillStyle = isDarkMode ? '#93C5FD' : '#2563EB';
-        ctx.font = 'bold 24px Arial';
-        ctx.fillText('OP', cardX + 85 + ctx.measureText(`u/${comment.author}`).width + 10, cardY + 45);
+        // Contenido del comentario
+        ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
+        ctx.font = '38px Arial';
+        wrapText(ctx, comment.content, cardX + 20, cardY + 155, cardWidth - 40, 40);
       }
 
-      // Contenido del comentario
-      ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-      ctx.font = '38px Arial';
-      wrapText(ctx, comment.content, cardX + 20, cardY + 155, cardWidth - 40, 40);
-    }
+      // Dibujar likes y comentarios
+      ctx.fillStyle = '#6B7280';
+      ctx.font = '28px Arial';
+      ctx.fillText(`❤️ ${messageStats[messageIndex].likes.toLocaleString()}`, cardX + 20, cardY + cardHeight - 40);
+      ctx.fillText(`💬 ${messageStats[messageIndex].comments.toLocaleString()}`, cardX + 150, cardY + cardHeight - 40);
+    };
 
-    // Dibujar likes y comentarios
-    ctx.fillStyle = '#6B7280';
-    ctx.font = '28px Arial';
-    ctx.fillText(`❤️ ${messageStats[messageIndex].likes.toLocaleString()}`, cardX + 20, cardY + cardHeight - 40);
-    ctx.fillText(`💬 ${messageStats[messageIndex].comments.toLocaleString()}`, cardX + 150, cardY + cardHeight - 40);
+    // Cargar y dibujar el avatar, luego dibujar todo el contenido
+    return new Promise<void>((resolve) => {
+      const avatarImg = new Image();
+      avatarImg.src = `/redditimages/${avatarIndices[messageIndex] + 1}.jpg`;
+
+      const completeDrawing = () => {
+        drawContent(); // Dibujar primero el contenido
+
+        // Luego dibujar el avatar encima
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cardX + 45, cardY + 45, 25, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.drawImage(avatarImg, cardX + 20, cardY + 20, 50, 50);
+        ctx.restore();
+
+        resolve();
+      };
+
+      if (avatarImg.complete) {
+        completeDrawing();
+      } else {
+        avatarImg.onload = completeDrawing;
+        avatarImg.onerror = () => {
+          console.warn(`Failed to load avatar image: ${avatarImg.src}`);
+          drawContent(); // Dibujar el contenido incluso si falla la carga del avatar
+          resolve();
+        };
+      }
+    });
   };
 
   // Añadir este useEffect para manejar la visibilidad y cierre de página
@@ -1438,7 +1491,7 @@ export default function RedditVideoPage() {
         '-i', 'video.webm',
         '-i', 'combined_audio.mp3',
         '-i', 'background_music.mp3',
-        '-filter_complex', '[1:a]volume=2[a1];[2:a]volume=0.03,aloop=loop=-1:size=2147483647[a2];[a1][a2]amix=inputs=2[aout]',
+        '-filter_complex', '[1:a]volume=4[a1];[2:a]volume=0.02,aloop=loop=-1:size=2147483647[a2];[a1][a2]amix=inputs=2[aout]',
         '-c:v', 'copy',
         '-map', '0:v:0',
         '-map', '[aout]',
@@ -2316,12 +2369,12 @@ export default function RedditVideoPage() {
                         }
                       </p>
                     </div>
-                    {videoStats.size && (
+                  {/*  {videoStats.size && (
                       <div className="bg-white p-4 rounded-lg border border-gray-100">
                         <p className="text-sm text-gray-500 mb-1">Size</p>
                         <p className="text-lg font-semibold">{videoStats.size.toFixed(2)} MB</p>
                       </div>
-                    )}
+                    )} */}
                   </div>
 
                   {/* Download Buttons */}
