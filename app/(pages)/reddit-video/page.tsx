@@ -228,6 +228,21 @@ export default function RedditVideoPage() {
   // Añadir al inicio del componente
   const [avatarImages, setAvatarImages] = useState<{ [key: number]: HTMLImageElement }>({});
 
+  // Añadir estos estados para controlar el progreso de cada paso
+  const [stepsProgress, setStepsProgress] = useState({
+    preparing: 0,
+    audio: 0,
+    video: 0,
+    finalizing: 0
+  });
+
+  // Añadir una ref para controlar los intervalos
+  const intervalsRef = useRef<{
+    preparing?: NodeJS.Timeout;
+    audio?: NodeJS.Timeout;
+    video?: NodeJS.Timeout;
+  }>({});
+
   const isValidRedditUrl = (url: string) => {
     const redditPattern = /^https?:\/\/(www\.)?reddit\.com\/r\/[\w-]+\/comments\/[\w-]+\/.*/;
     return redditPattern.test(url);
@@ -294,7 +309,7 @@ export default function RedditVideoPage() {
   // Añadir esta función después de las interfaces
   const calculateApproximateDuration = (text: string): number => {
     // Una aproximación básica: ~3 caracteres por segundo
-    return text.length / 16;
+    return text.length / 15;
   };
 
   // Modificar la función toggleComment
@@ -510,6 +525,79 @@ export default function RedditVideoPage() {
     }
   };
 
+  // Modificar el useEffect del progreso
+  useEffect(() => {
+    if (isGenerating) {
+      let isMounted = true;
+
+      const startPreparingPhase = () => {
+        let preparingProgress = 0;
+        intervalsRef.current.preparing = setInterval(() => {
+          if (!isMounted) return;
+          preparingProgress = Math.min(preparingProgress + 2, 100);
+          setStepsProgress(prev => ({
+            ...prev,
+            preparing: preparingProgress
+          }));
+          setProgress(Math.min(20 * (preparingProgress / 100), 20));
+
+          if (preparingProgress >= 100) {
+            clearInterval(intervalsRef.current.preparing);
+            startAudioPhase();
+          }
+        }, 100);
+      };
+
+      const startAudioPhase = () => {
+        let audioProgress = 0;
+        intervalsRef.current.audio = setInterval(() => {
+          if (!isMounted) return;
+          audioProgress = Math.min(audioProgress + 1, 100);
+          setStepsProgress(prev => ({
+            ...prev,
+            audio: audioProgress
+          }));
+          setProgress(20 + (25 * (audioProgress / 100)));
+
+          if (audioProgress >= 100) {
+            clearInterval(intervalsRef.current.audio);
+            startVideoPhase();
+          }
+        }, 100);
+      };
+
+      const startVideoPhase = () => {
+        let videoProgress = 0;
+        intervalsRef.current.video = setInterval(() => {
+          if (!isMounted) return;
+          videoProgress = Math.min(videoProgress + 0.33, 100);
+          setStepsProgress(prev => ({
+            ...prev,
+            video: videoProgress
+          }));
+          setProgress(45 + (50 * (videoProgress / 100)));
+
+          if (videoProgress >= 100) {
+            clearInterval(intervalsRef.current.video);
+            // No establecer finalizing aquí, se hará cuando el video esté realmente listo
+          }
+        }, 100);
+      };
+
+      // Iniciar la secuencia
+      startPreparingPhase();
+
+      // Cleanup function
+      return () => {
+        isMounted = false;
+        Object.values(intervalsRef.current).forEach(interval => {
+          if (interval) clearInterval(interval);
+        });
+      };
+    }
+  }, [isGenerating]); // Solo depende de isGenerating
+
+  // Modificar la función generateVideo para manejar el blob una sola vez
   const generateVideo = async () => {
     try {
       setIsGenerating(true);
@@ -756,6 +844,14 @@ export default function RedditVideoPage() {
       setCurrentStep(4);
       console.log('🎉 Video generation completed successfully!');
 
+      // Actualizar el progreso final solo cuando el video esté realmente listo
+      setStepsProgress(prev => ({
+        ...prev,
+        finalizing: 100
+      }));
+      setProgress(100);
+
+      setCurrentStep(4);
     } catch (error) {
       console.error('❌ Error generating video:', error);
       console.error('🔍 Error details:', {
@@ -764,8 +860,10 @@ export default function RedditVideoPage() {
         stack: error.stack
       });
       alert('Error generating video. Please try again.');
-    } finally {
-      console.log('🏁 Video generation process finished');
+      // Limpiar los intervalos en caso de error
+      Object.values(intervalsRef.current).forEach(interval => {
+        if (interval) clearInterval(interval);
+      });
       setIsGenerating(false);
     }
   };
@@ -1529,25 +1627,206 @@ export default function RedditVideoPage() {
     }
   }, [currentStep, storyData, selectedComments, selectedVideo]); // Añadir selectedVideo como dependencia
 
-  // Modificar el botón en el paso 3 para usar la nueva función
+  // Modificar la función renderStep3Button
   const renderStep3Button = () => (
-    <button
-      onClick={generateVideo}
-      className={`bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-        isGenerating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'
-      }`}
-      disabled={isGenerating}
-    >
-      {isGenerating ? (
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          {progress > 0 ? `${Math.round(progress)}%` : 'Generating...'}
+    <>
+      <button
+        onClick={generateVideo}
+        className="bg-blue-600 text-white px-6 py-3 rounded-lg text-sm font-medium transition-all hover:bg-blue-700 flex items-center gap-2"
+        disabled={isGenerating}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+        </svg>
+        Generate Video
+      </button>
+
+      {/* Modal de progreso */}
+      {isGenerating && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl p-8 max-w-md w-full mx-4 shadow-xl">
+            {/* Encabezado */}
+            <div className="text-center mb-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+                Generating Your Video
+              </h3>
+              <p className="text-gray-500 dark:text-gray-400 text-sm">
+                This might take a few moments. Please don't close this window.
+              </p>
+            </div>
+
+            {/* Spinner y progreso */}
+            <div className="flex flex-col items-center mb-8">
+              {/* Círculo de progreso animado */}
+              <div className="relative w-32 h-32 mb-4">
+                {/* Círculo de fondo */}
+                <svg className="w-full h-full" viewBox="0 0 100 100">
+                  <circle
+                    className="text-gray-200 dark:text-gray-700"
+                    strokeWidth="8"
+                    stroke="currentColor"
+                    fill="transparent"
+                    r="42"
+                    cx="50"
+                    cy="50"
+                  />
+                  <circle
+                    className="text-blue-600"
+                    strokeWidth="8"
+                    strokeLinecap="round"
+                    stroke="currentColor"
+                    fill="transparent"
+                    r="42"
+                    cx="50"
+                    cy="50"
+                    style={{
+                      strokeDasharray: `${2 * Math.PI * 42}`,
+                      strokeDashoffset: `${2 * Math.PI * 42 * (1 - progress / 100)}`,
+                      transform: 'rotate(-90deg)',
+                      transformOrigin: '50% 50%',
+                      transition: 'stroke-dashoffset 0.5s ease'
+                    }}
+                  />
+                </svg>
+                {/* Porcentaje en el centro */}
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-2xl font-bold text-gray-900 dark:text-white">
+                    {Math.round(progress)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Pasos del proceso actualizados */}
+            <div className="space-y-4">
+              <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-2 h-2 rounded-full ${
+                      stepsProgress.preparing < 100 ? 'bg-blue-500 animate-pulse' : 'bg-green-500'
+                    }`} />
+                    <span className={`text-sm font-medium ${
+                      stepsProgress.preparing < 100 ? 'text-blue-600 dark:text-blue-400' : 'text-green-600 dark:text-green-400'
+                    }`}>
+                      Preparing assets
+                    </span>
+                  </div>
+                  {stepsProgress.preparing > 0 && (
+                    <span className="text-xs font-medium text-gray-500">
+                      {Math.round(stepsProgress.preparing)}%
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-2 h-2 rounded-full ${
+                      stepsProgress.preparing === 100 && stepsProgress.audio < 100
+                        ? 'bg-blue-500 animate-pulse'
+                        : stepsProgress.audio === 100
+                          ? 'bg-green-500'
+                          : 'bg-gray-300 dark:bg-gray-600'
+                    }`} />
+                    <span className={`text-sm font-medium ${
+                      stepsProgress.preparing === 100 && stepsProgress.audio < 100
+                        ? 'text-blue-600 dark:text-blue-400'
+                        : stepsProgress.audio === 100
+                          ? 'text-green-600 dark:text-green-400'
+                          : 'text-gray-400 dark:text-gray-500'
+                    }`}>
+                      Generating Audio
+                    </span>
+                  </div>
+                  {stepsProgress.audio > 0 && (
+                    <span className="text-xs font-medium text-gray-500">
+                      {Math.round(stepsProgress.audio)}%
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-2 h-2 rounded-full ${
+                      stepsProgress.audio === 100 && stepsProgress.video < 100
+                        ? 'bg-blue-500 animate-pulse'
+                        : stepsProgress.video === 100
+                          ? 'bg-green-500'
+                          : 'bg-gray-300 dark:bg-gray-600'
+                    }`} />
+                    <span className={`text-sm font-medium ${
+                      stepsProgress.audio === 100 && stepsProgress.video < 100
+                        ? 'text-blue-600 dark:text-blue-400'
+                        : stepsProgress.video === 100
+                          ? 'text-green-600 dark:text-green-400'
+                          : 'text-gray-400 dark:text-gray-500'
+                    }`}>
+                      Generating video
+                    </span>
+                  </div>
+                  {stepsProgress.video > 0 && (
+                    <span className="text-xs font-medium text-gray-500">
+                      {Math.round(stepsProgress.video)}%
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-2 h-2 rounded-full ${
+                      stepsProgress.video === 100 && stepsProgress.finalizing < 100
+                        ? 'bg-blue-500 animate-pulse'
+                        : stepsProgress.finalizing === 100
+                          ? 'bg-green-500'
+                          : 'bg-gray-300 dark:bg-gray-600'
+                    }`} />
+                    <span className={`text-sm font-medium ${
+                      stepsProgress.video === 100 && stepsProgress.finalizing < 100
+                        ? 'text-blue-600 dark:text-blue-400'
+                        : stepsProgress.finalizing === 100
+                          ? 'text-green-600 dark:text-green-400'
+                          : 'text-gray-400 dark:text-gray-500'
+                    }`}>
+                      Finalizing
+                    </span>
+                  </div>
+                  {stepsProgress.finalizing > 0 && (
+                    <span className="text-xs font-medium text-gray-500">
+                      {Math.round(stepsProgress.finalizing)}%
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Tip en la parte inferior */}
+            <div className="mt-6 text-center">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                💡 Tip: The video will be ready to download once the generation is complete
+              </p>
+            </div>
+          </div>
         </div>
-      ) : (
-        'Generate Video'
       )}
-    </button>
+    </>
   );
+
+  // Añadir estos keyframes en el archivo globals.css o en un estilo en línea
+  const shimmerKeyframes = `
+    @keyframes shimmer {
+      0% {
+        transform: translateX(-100%);
+      }
+      100% {
+        transform: translateX(100%);
+      }
+    }
+  `;
 
   // Añadir pantalla de pre-renderizado
   const renderPreRenderingScreen = () => (
@@ -1798,6 +2077,15 @@ export default function RedditVideoPage() {
         musicPreviewRef.current.pause();
         musicPreviewRef.current = null;
       }
+    };
+  }, []);
+
+  // Añadir un cleanup effect para los intervalos
+  useEffect(() => {
+    return () => {
+      Object.values(intervalsRef.current).forEach(interval => {
+        if (interval) clearInterval(interval);
+      });
     };
   }, []);
 
@@ -2296,7 +2584,7 @@ export default function RedditVideoPage() {
                 </div>
               </div>
 
-              <div className="pt-6 border-t">
+              <div className="pt-6 border-t flex">
                 <button
                   onClick={() => setCurrentStep(2)}
                   className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 mr-3"
