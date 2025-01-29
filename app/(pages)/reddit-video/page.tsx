@@ -64,6 +64,12 @@ const MUSIC_OPTIONS = [
   { id: 'storytelling', name: 'Storytelling', src: '/songs/storytelling.mp3' }
 ];
 
+// Añadir este nuevo tipo al inicio del archivo
+interface VideoStats {
+  duration: number | null;
+  size: number | null;
+}
+
 export default function RedditVideoPage() {
   // Mover el estado aquí, dentro del componente
   const [selectedVoice, setSelectedVoice] = useState('alloy');
@@ -212,6 +218,12 @@ export default function RedditVideoPage() {
   // Añadir nuevo estado para la voz que se está reproduciendo
   const [playingVoice, setPlayingVoice] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Dentro del componente, añadir el nuevo estado
+  const [videoStats, setVideoStats] = useState<VideoStats>({
+    duration: null,
+    size: null
+  });
 
   const isValidRedditUrl = (url: string) => {
     const redditPattern = /^https?:\/\/(www\.)?reddit\.com\/r\/[\w-]+\/comments\/[\w-]+\/.*/;
@@ -431,9 +443,49 @@ export default function RedditVideoPage() {
     return totalDuration;
   };
 
-  // Modify the generateVideo function
+  // Añadir esta función para obtener la duración de un audio
+  const getAudioDuration = async (blob: Blob): Promise<number> => {
+    return new Promise((resolve) => {
+      const audio = new Audio(URL.createObjectURL(blob));
+      audio.addEventListener('loadedmetadata', () => {
+        resolve(audio.duration);
+      });
+    });
+  };
+
+  // Mover la función executeFFmpegWithTimeout fuera de generateVideo
+  const executeFFmpegWithTimeout = async (ffmpeg: FFmpeg, command: string[], timeoutMs: number = 300000) => {
+    return new Promise<void>(async (resolve, reject) => {
+      // Timeout handler
+      const timeoutId = setTimeout(() => {
+        reject(new Error('FFmpeg execution timed out'));
+      }, timeoutMs);
+
+      try {
+        // Progress logging
+        let lastProgress = 0;
+        ffmpeg.on('progress', (progress) => {
+          const currentProgress = Math.round(progress.progress * 100);
+          if (currentProgress > lastProgress) {
+            console.log(`🎬 FFmpeg Progress: ${currentProgress}%`);
+            lastProgress = currentProgress;
+          }
+        });
+
+        // Execute command
+        await ffmpeg.exec(command);
+        clearTimeout(timeoutId);
+        resolve();
+      } catch (error) {
+        clearTimeout(timeoutId);
+        reject(error);
+      }
+    });
+  };
+
   const generateVideo = async () => {
     try {
+      console.log('🚀 Starting video generation process...');
       setIsGenerating(true);
       setProgress(0);
 
@@ -442,6 +494,7 @@ export default function RedditVideoPage() {
       const ffmpeg = new FFmpeg();
 
       const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      console.log('📦 Loading FFmpeg core files from:', baseURL);
       await ffmpeg.load({
         coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
         wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
@@ -449,27 +502,23 @@ export default function RedditVideoPage() {
       });
 
       console.log('✅ FFmpeg loaded successfully');
+      setProgress(10);
 
       // 2. Generate audio files
-      console.log('🎙️ Generating audio files...');
-      const newAudioFiles: typeof audioFiles = {};
-      let audioDuration = 0;
+      console.log('🎙️ Starting audio generation...');
+      const audioFiles: { [key: string]: { blob: Blob; duration: number } } = {};
+      let totalDuration = 0;
 
       // Generate title audio
-      const titleAudioUrl = await generateSpeech(storyData!.title);
-      if (titleAudioUrl) {
-        const titleAudio = new Audio(titleAudioUrl);
-        await new Promise<void>((resolve) => {
-          titleAudio.addEventListener('loadedmetadata', () => {
-            newAudioFiles['title'] = {
-              audio: titleAudioUrl,
-              text: storyData!.title,
-              duration: titleAudio.duration
-            };
-            audioDuration += titleAudio.duration;
-            resolve();
-          });
-        });
+      console.log('📝 Generating title audio for:', storyData!.title.substring(0, 50) + '...');
+      const titleAudio = await generateSpeech(storyData!.title);
+      if (titleAudio) {
+        const response = await fetch(titleAudio);
+        const blob = await response.blob();
+        const duration = await getAudioDuration(blob);
+        audioFiles['title'] = { blob, duration };
+        totalDuration += duration + 0.5; // Añadir 0.5s de pausa
+        console.log('💾 Title audio duration:', duration.toFixed(2), 's');
       }
 
       // Generate comment audios
@@ -477,181 +526,217 @@ export default function RedditVideoPage() {
         const comment = storyData!.commentsList[selectedComments[i]];
         const audioUrl = await generateSpeech(comment.content);
         if (audioUrl) {
-          const audio = new Audio(audioUrl);
-          await new Promise<void>((resolve) => {
-            audio.addEventListener('loadedmetadata', () => {
-              newAudioFiles[`comment_${i}`] = {
-                audio: audioUrl,
-                text: comment.content,
-                duration: audio.duration
-              };
-              audioDuration += audio.duration;
-              resolve();
-            });
-          });
+          const response = await fetch(audioUrl);
+          const blob = await response.blob();
+          const duration = await getAudioDuration(blob);
+          audioFiles[`comment_${i}`] = { blob, duration };
+          totalDuration += duration + 0.5; // Añadir 0.5s de pausa
+          console.log(`💾 Comment ${i + 1} audio duration:`, duration.toFixed(2), 's');
         }
-        setProgress((i + 1) / (selectedComments.length * 2) * 50);
+        setProgress(10 + (i + 1) / selectedComments.length * 30);
       }
 
-      setAudioFiles(newAudioFiles);
-      setPreviewDuration(audioDuration);
+      // 3. Write files to FFmpeg
+      console.log('📝 Writing files to FFmpeg...');
 
-      // 3. Generate video with comments
-      console.log('🎬 Generating video with comments...');
-      const canvas = document.createElement('canvas');
-      canvas.width = 1080;
-      canvas.height = 1920;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('Could not get canvas context');
-
-      // Create background video
-      const backgroundVideo = document.createElement('video');
-      backgroundVideo.src = VIDEO_OPTIONS.find(v => v.id === selectedVideo)?.src || '/videos/minecraft-vertical.mp4';
-      backgroundVideo.muted = true;
-      backgroundVideo.loop = true;
-
-      // Wait for video to load
-      await new Promise((resolve) => {
-        backgroundVideo.onloadeddata = resolve;
-        backgroundVideo.load();
-      });
-
-      // Setup recording
-      const stream = canvas.captureStream(30);
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9',
-        videoBitsPerSecond: 8000000
-      });
-
-      const chunks: Blob[] = [];
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
-
-      // Start recording
-      mediaRecorder.start(1000);
-      await backgroundVideo.play();
-
-      // Render frames
-      const totalDuration = audioDuration * 1000; // Convert to milliseconds
-      const startTime = Date.now();
-      let lastVideoReset = 0;
-
-      const renderFrame = () => {
-        const currentTime = Date.now() - startTime;
-
-        if (currentTime >= totalDuration) {
-          mediaRecorder.stop();
-          return;
-        }
-
-        // Reset background video if needed
-        if (currentTime - lastVideoReset >= backgroundVideo.duration * 1000) {
-          backgroundVideo.currentTime = 0;
-          lastVideoReset = currentTime;
-        }
-
-        // Draw background video
-        ctx.drawImage(backgroundVideo, 0, 0, canvas.width, canvas.height);
-
-        // Calculate current message
-        const timeInSeconds = currentTime / 1000;
-        let accumulatedTime = 0;
-        let messageIndex = -1;
-
-        // Check title timing
-        if (newAudioFiles['title']) {
-          if (timeInSeconds < newAudioFiles['title'].duration) {
-            messageIndex = 0;
-          }
-          accumulatedTime += newAudioFiles['title'].duration;
-        }
-
-        // Check comments timing
-        for (let i = 0; i < selectedComments.length; i++) {
-          const audioKey = `comment_${i}`;
-          if (newAudioFiles[audioKey]) {
-            if (timeInSeconds >= accumulatedTime &&
-                timeInSeconds < accumulatedTime + newAudioFiles[audioKey].duration) {
-              messageIndex = i + 1;
-              break;
-            }
-            accumulatedTime += newAudioFiles[audioKey].duration;
-          }
-        }
-
-        // Draw message if needed
-        if (messageIndex >= 0) {
-          drawMessage(ctx, messageIndex, isDarkMode, storyData!, selectedComments);
-        }
-
-        setProgress(Math.min((currentTime / totalDuration) * 100, 99));
-        requestAnimationFrame(renderFrame);
-      };
-
-      // Start rendering
-      renderFrame();
-
-      // Wait for recording to finish
-      const videoBlob = await new Promise<Blob>((resolve) => {
-        mediaRecorder.onstop = () => {
-          const blob = new Blob(chunks, { type: 'video/webm' });
-          resolve(blob);
-        };
-      });
-
-      // 4. Process with FFmpeg
-      console.log('📝 Processing final video...');
-      await ffmpeg.writeFile('video.webm', new Uint8Array(await videoBlob.arrayBuffer()));
+      // Write background video
+      console.log('🎬 Writing background video...');
+      const selectedVideoSrc = VIDEO_OPTIONS.find(v => v.id === selectedVideo)?.src || '';
+      console.log('🎥 Selected video source:', selectedVideoSrc);
+      const videoResponse = await fetch(selectedVideoSrc);
+      const videoData = await videoResponse.arrayBuffer();
+      console.log('📦 Background video size:', (videoData.byteLength / (1024 * 1024)).toFixed(2), 'MB');
+      await ffmpeg.writeFile('background.mp4', new Uint8Array(videoData));
+      console.log('✅ Background video written successfully');
 
       // Write audio files
-      const audioInputs: string[] = [];
-      let inputIndex = 1;
-
-      for (const [key, value] of Object.entries(newAudioFiles)) {
-        const response = await fetch(value.audio);
-        const audioData = await response.arrayBuffer();
-        await ffmpeg.writeFile(`${key}.mp3`, new Uint8Array(audioData));
-        audioInputs.push(`[${inputIndex}:a]`);
-        inputIndex++;
+      console.log('🎵 Writing audio files...');
+      for (const [key, { blob, duration }] of Object.entries(audioFiles)) {
+        console.log(`📝 Writing ${key} audio...`);
+        await ffmpeg.writeFile(`${key}.mp3`, new Uint8Array(await blob.arrayBuffer()));
+        console.log(`✅ ${key} audio written successfully`);
       }
 
       // Write background music
-      const musicResponse = await fetch(MUSIC_OPTIONS.find(m => m.id === selectedMusic)?.src || '');
+      console.log('🎼 Writing background music...');
+      const selectedMusicSrc = MUSIC_OPTIONS.find(m => m.id === selectedMusic)?.src || '';
+      console.log('🎵 Selected music source:', selectedMusicSrc);
+      const musicResponse = await fetch(selectedMusicSrc);
       const musicData = await musicResponse.arrayBuffer();
+      console.log('📦 Background music size:', (musicData.byteLength / 1024).toFixed(2), 'KB');
       await ffmpeg.writeFile('background_music.mp3', new Uint8Array(musicData));
+      console.log('✅ Background music written successfully');
 
-      // Create filter for concatenating all audio
-      const concatFilter = audioInputs.join('');
-      const filterComplex = `${concatFilter}concat=n=${audioInputs.length}:v=0:a=1[speech];[${inputIndex}:a]volume=0.03,aloop=loop=-1:size=2147483647[music];[speech][music]amix=inputs=2[aout]`;
+      setProgress(50);
 
-      // Execute FFmpeg
-      await ffmpeg.exec([
-        '-i', 'video.webm',
-        ...Object.keys(newAudioFiles).flatMap(file => ['-i', `${file}.mp3`]),
+      // 4. Generate overlay images
+      console.log('🎨 Starting overlay image generation...');
+      const canvas = document.createElement('canvas');
+      canvas.width = 1080;
+      canvas.height = 1920;
+      const ctx = canvas.getContext('2d')!;
+
+      // Generate and save overlay images
+      console.log(`📸 Generating ${selectedComments.length + 1} overlay images...`);
+      const overlayImages = [];
+      for (let i = 0; i <= selectedComments.length; i++) {
+        console.log(`🖼️ Generating overlay ${i + 1}/${selectedComments.length + 1}`);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawMessage(ctx, i, isDarkMode, storyData!, selectedComments);
+        const blob = await new Promise<Blob>(resolve => {
+          canvas.toBlob(blob => resolve(blob!), 'image/png');
+        });
+        console.log(`📦 Overlay ${i + 1} size:`, (blob.size / 1024).toFixed(2), 'KB');
+        await ffmpeg.writeFile(`overlay_${i}.png`, new Uint8Array(await blob.arrayBuffer()));
+        overlayImages.push(`overlay_${i}.png`);
+        console.log(`✅ Overlay ${i + 1} written successfully`);
+        setProgress(50 + (i + 1) / (selectedComments.length + 1) * 20);
+      }
+
+      // 5. Create complex filter
+      console.log('🔧 Creating FFmpeg filter complex...');
+      let filterComplex = '';
+      let overlayChain = '[v' + (overlayImages.length - 1) + ']';
+      let audioInputs = '';
+      let audioMixInputs = '';
+
+      // Calcular los tiempos de inicio y fin de cada mensaje
+      let currentTime = 0;
+      const messageTiming = [];
+
+      // Tiempo para el título
+      if (audioFiles['title']) {
+        messageTiming.push({
+          start: currentTime,
+          end: currentTime + audioFiles['title'].duration
+        });
+        currentTime += audioFiles['title'].duration + 0.5; // Añadir 0.5s de pausa
+        totalDuration = currentTime; // Actualizar duración total
+      }
+
+      // Tiempos para los comentarios
+      for (let i = 0; i < selectedComments.length; i++) {
+        const audio = audioFiles[`comment_${i}`];
+        if (audio) {
+          messageTiming.push({
+            start: currentTime,
+            end: currentTime + audio.duration
+          });
+          currentTime += audio.duration + 0.5; // Añadir 0.5s de pausa
+          totalDuration = currentTime; // Actualizar duración total
+        }
+      }
+
+      console.log('📊 Message timings:', messageTiming);
+      console.log('⏱️ Total duration:', totalDuration.toFixed(2), 'seconds');
+
+      // Scale and pad background video
+      filterComplex += '[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[bg];';
+
+      // Process overlays with exact timings
+      overlayImages.forEach((img, i) => {
+        filterComplex += `[${i + 1}:v]scale=1080:1920[img${i}];`;
+        filterComplex += i === 0
+          ? `[bg][img${i}]overlay=0:0:enable='between(t,${messageTiming[i].start},${messageTiming[i].end})'[v${i}];`
+          : `[v${i-1}][img${i}]overlay=0:0:enable='between(t,${messageTiming[i].start},${messageTiming[i].end})'[v${i}];`;
+      });
+
+      // Build audio inputs string
+      Object.keys(audioFiles).forEach((_, i) => {
+        audioInputs += `[${i + overlayImages.length + 1}:a]`;
+        audioMixInputs += `[a${i}]`;
+      });
+
+      // Process audio
+      filterComplex += `${audioInputs}concat=n=${Object.keys(audioFiles).length}:v=0:a=1[speech];`;
+      filterComplex += `[${Object.keys(audioFiles).length + overlayImages.length + 1}:a]volume=0.3,aloop=loop=-1:size=2147483647[music];`;
+      filterComplex += `[speech][music]amix=inputs=2:duration=longest[aout]`;
+
+      console.log('📝 Final filter complex:', filterComplex);
+
+      // 6. Execute FFmpeg command
+      console.log('🎬 Executing FFmpeg command...');
+      const ffmpegCommand = [
+        '-i', 'background.mp4',
+        ...overlayImages.map(img => ['-i', img]).flat(),
+        ...Object.keys(audioFiles).map(key => ['-i', `${key}.mp3`]).flat(),
         '-i', 'background_music.mp3',
         '-filter_complex', filterComplex,
-        '-map', '0:v',
+        '-map', overlayChain,
         '-map', '[aout]',
-        '-c:v', 'copy',
+        '-t', Math.ceil(totalDuration).toString(), // Redondear hacia arriba para asegurar que no se corte nada
+        // Añadir estos parámetros para mejorar el rendimiento y la estabilidad
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-movflags', '+faststart',
+        '-pix_fmt', 'yuv420p',
+        // Ajustar la calidad del video
+        '-crf', '28',
+        '-maxrate', '2500k',
+        '-bufsize', '5000k',
+        // Ajustar el audio
+        '-c:v', 'libx264',
         '-c:a', 'aac',
-        '-shortest',
+        '-b:a', '192k',
+        // Forzar el overwrite del archivo de salida
+        '-y',
         'output.mp4'
-      ]);
+      ];
 
-      // Read final video
+      console.log('📝 FFmpeg command:', ffmpegCommand.join(' '));
+
+      try {
+        await executeFFmpegWithTimeout(ffmpeg, ffmpegCommand);
+        console.log('✅ FFmpeg command executed successfully');
+      } catch (error) {
+        if (error.message === 'FFmpeg execution timed out') {
+          console.error('⏰ FFmpeg execution timed out after 5 minutes');
+          throw new Error('Video generation took too long. Please try with fewer comments or a shorter video.');
+        }
+        throw error;
+      }
+
+      setProgress(90);
+
+      // 7. Read and set final video
+      console.log('📤 Reading final video...');
       const data = await ffmpeg.readFile('output.mp4');
       const finalVideo = new Blob([data], { type: 'video/mp4' });
-      setPrerenderedVideo(finalVideo);
 
-      setCurrentStep(4);
+      // Obtener la duración real del video
+      const videoDuration = await new Promise<number>((resolve) => {
+        const videoElement = document.createElement('video');
+        videoElement.src = URL.createObjectURL(finalVideo);
+        videoElement.addEventListener('loadedmetadata', () => {
+          const duration = videoElement.duration;
+          setVideoStats({
+            duration: duration,
+            size: data.length / (1024 * 1024) // Tamaño en MB
+          });
+          resolve(duration);
+          URL.revokeObjectURL(videoElement.src);
+        });
+      });
+
+      console.log('⏱️ Final video duration:', videoDuration.toFixed(2), 'seconds');
+      console.log('📦 Final video size:', (data.length / (1024 * 1024)).toFixed(2), 'MB');
+      setPrerenderedVideo(finalVideo);
+      console.log('✅ Final video processed successfully');
+
       setProgress(100);
-      console.log('✅ Video generated successfully!');
+      setCurrentStep(4);
+      console.log('🎉 Video generation completed successfully!');
 
     } catch (error) {
       console.error('❌ Error generating video:', error);
+      console.error('🔍 Error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      });
       alert('Error generating video. Please try again.');
     } finally {
+      console.log('🏁 Video generation process finished');
       setIsGenerating(false);
     }
   };
@@ -2224,8 +2309,19 @@ export default function RedditVideoPage() {
                     </div>
                     <div className="bg-white p-4 rounded-lg border border-gray-100">
                       <p className="text-sm text-gray-500 mb-1">Duration</p>
-                      <p className="text-lg font-semibold">{Math.round(previewDuration)}s</p>
+                      <p className="text-lg font-semibold">
+                        {videoStats.duration
+                          ? `${videoStats.duration.toFixed(2)}s`
+                          : <span className="text-gray-400">Calculating...</span>
+                        }
+                      </p>
                     </div>
+                    {videoStats.size && (
+                      <div className="bg-white p-4 rounded-lg border border-gray-100">
+                        <p className="text-sm text-gray-500 mb-1">Size</p>
+                        <p className="text-lg font-semibold">{videoStats.size.toFixed(2)} MB</p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Download Buttons */}
@@ -2297,4 +2393,3 @@ export default function RedditVideoPage() {
     </div>
   );
 }
-

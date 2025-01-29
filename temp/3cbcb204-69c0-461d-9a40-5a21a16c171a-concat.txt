@@ -1,0 +1,2 @@
+file 'C:\Users\david\Desktop\vidai\temp\3cbcb204-69c0-461d-9a40-5a21a16c171a-title.mp3'
+file 'C:\Users\david\Desktop\vidai\temp\3cbcb204-69c0-461d-9a40-5a21a16c171a-comment-1.mp3'

@@ -1,28 +1,29 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    appDir: true,
+    serverActions: true,
   },
   webpack: (config) => {
     config.resolve.fallback = {
       ...config.resolve.fallback,
       fs: false,
       path: false,
+      child_process: false,
     };
     return config;
   },
   async headers() {
     return [
       {
-        source: "/:path*",
+        source: '/:path*',
         headers: [
           {
-            key: "Cross-Origin-Opener-Policy",
-            value: "same-origin",
+            key: 'Cross-Origin-Opener-Policy',
+            value: 'same-origin',
           },
           {
-            key: "Cross-Origin-Embedder-Policy",
-            value: "require-corp",
+            key: 'Cross-Origin-Embedder-Policy',
+            value: 'require-corp',
           },
         ],
       },

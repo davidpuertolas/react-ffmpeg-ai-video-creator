@@ -10,8 +10,10 @@
     "postinstall": "cpy 'node_modules/@ffmpeg/core/dist/umd/*' public/"
   },
   "dependencies": {
-    "@ffmpeg/ffmpeg": "^0.12.6",
-    "@ffmpeg/util": "^0.12.1",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "@headlessui/react": "^2.2.0",
     "@heroicons/react": "^2.2.0",
     "@remotion/bundler": "^4.0.243",
@@ -30,14 +32,17 @@
     "react-player": "^2.16.0",
     "recordrtc": "^5.6.2",
     "remotion": "^4.0.243",
+    "uuid": "^11.0.5",
     "videocontext": "^0.54.0",
     "zustand": "^5.0.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
+    "@types/fluent-ffmpeg": "^2.1.27",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/uuid": "^10.0.0",
     "cpy-cli": "^5.0.0",
     "eslint": "^9",
     "eslint-config-next": "15.1.2",
