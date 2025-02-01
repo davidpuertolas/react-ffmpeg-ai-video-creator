@@ -448,6 +448,10 @@ export default function RedditVideoPage() {
       setIsGenerating(true);
       setProgress(0);
 
+      // 1. Calculate total duration from all audio segments
+      const totalDuration = scriptSegments.reduce((total, segment) => total + segment.duration, 0);
+      console.log('📊 Total duration:', totalDuration, 'seconds');
+
       // 1. Load FFmpeg
       console.log('🔧 Loading FFmpeg...');
       const ffmpeg = new FFmpeg();
@@ -467,8 +471,8 @@ export default function RedditVideoPage() {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('Could not get canvas context');
 
-      // 3. Render each segment
-      console.log('🎨 Rendering segments...');
+      // 3. Render video for the total duration
+      console.log('🎨 Starting video rendering...');
       const chunks: Blob[] = [];
       const stream = canvas.captureStream(30);
       const mediaRecorder = new MediaRecorder(stream, {
@@ -480,7 +484,6 @@ export default function RedditVideoPage() {
         if (e.data.size > 0) chunks.push(e.data);
       };
 
-      // Promesa para manejar la finalización de la grabación
       const recordingPromise = new Promise<Blob>((resolve) => {
         mediaRecorder.onstop = () => {
           const videoBlob = new Blob(chunks, { type: 'video/webm' });
@@ -490,9 +493,10 @@ export default function RedditVideoPage() {
 
       mediaRecorder.start(1000);
 
-      // 4. Render each segment
+      // 4. Render each segment with its correct duration
+      let currentTime = 0;
       for (const segment of scriptSegments) {
-        console.log(`🎬 Rendering segment: ${segment.text.substring(0, 30)}...`);
+        console.log(`🎬 Rendering segment at ${currentTime}s for ${segment.duration}s`);
 
         // Load background image
         const img = new Image();
@@ -503,12 +507,15 @@ export default function RedditVideoPage() {
           img.src = segment.image;
         });
 
-        // Draw image and text
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        drawMessage(ctx, segment.text, isDarkMode);
+        // Draw image and text for the segment duration
+        const startTime = Date.now();
+        while (Date.now() - startTime < segment.duration * 1000) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          drawMessage(ctx, segment.text, isDarkMode);
+          await new Promise(requestAnimationFrame);
+        }
 
-        // Wait for segment duration
-        await new Promise(resolve => setTimeout(resolve, segment.duration * 1000));
+        currentTime += segment.duration;
       }
 
       mediaRecorder.stop();
@@ -534,13 +541,13 @@ export default function RedditVideoPage() {
           await ffmpeg.writeFile(`audio${i}.mp3`, new Uint8Array(audioArrayBuffer));
         }
 
-        // Create concat file
+        // Create concat file for audio
         const concatContent = audioBlobs
           .map((_, i) => `file 'audio${i}.mp3'`)
           .join('\n');
         await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(concatContent));
 
-        // 7. Combine video and audio
+        // 7. Combine video and audio ensuring they match in duration
         console.log('🔄 Combining video and audio...');
         await ffmpeg.exec([
           '-i', 'video.webm',
@@ -549,6 +556,8 @@ export default function RedditVideoPage() {
           '-i', 'concat.txt',
           '-c:v', 'copy',
           '-c:a', 'aac',
+          '-map', '0:v:0',
+          '-map', '1:a:0',
           '-shortest',
           'output.mp4'
         ]);
