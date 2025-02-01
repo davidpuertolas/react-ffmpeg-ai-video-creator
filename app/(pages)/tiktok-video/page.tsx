@@ -153,6 +153,29 @@ const searchPexelsImage = async (query: string) => {
   }
 };
 
+// Modificar la función splitIntoWordGroups para crear grupos más naturales
+const splitIntoWordGroups = (text: string): string[] => {
+  const words = text.split(' ');
+  const groups: string[] = [];
+  let currentGroup = '';
+  let wordCount = 0;
+
+  for (const word of words) {
+    if (wordCount < 3) {
+      currentGroup += (currentGroup ? ' ' : '') + word;
+      wordCount++;
+    } else {
+      groups.push(currentGroup);
+      currentGroup = word;
+      wordCount = 1;
+    }
+  }
+  if (currentGroup) {
+    groups.push(currentGroup);
+  }
+  return groups;
+};
+
 export default function RedditVideoPage() {
   const [currentStep, setCurrentStep] = useState(1);
   const [scriptData, setScriptData] = useState<ScriptData | null>(null);
@@ -507,15 +530,45 @@ export default function RedditVideoPage() {
           img.src = segment.image;
         });
 
+        // Cargar y analizar el audio para obtener su duración real
+        const audio = new Audio(segment.audio);
+        await new Promise(resolve => {
+          audio.onloadedmetadata = resolve;
+        });
+        const audioDuration = audio.duration;
+
+        // Preparar los grupos de palabras y calcular tiempos
+        const wordGroups = splitIntoWordGroups(segment.text);
+        const timePerGroup = audioDuration / wordGroups.length;
+
         // Draw image and text for the segment duration
         const startTime = Date.now();
-        while (Date.now() - startTime < segment.duration * 1000) {
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          drawMessage(ctx, segment.text, isDarkMode);
+        let lastWordGroupIndex = -1;
+
+        while (Date.now() - startTime < audioDuration * 1000) {
+          const elapsed = (Date.now() - startTime) / 1000;
+          const currentWordGroupIndex = Math.min(
+            Math.floor(elapsed / timePerGroup),
+            wordGroups.length - 1
+          );
+
+          // Solo actualizar si cambió el grupo de palabras
+          if (currentWordGroupIndex !== lastWordGroupIndex) {
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            drawMessage(
+              ctx,
+              segment.text,
+              isDarkMode,
+              elapsed / audioDuration,
+              currentWordGroupIndex
+            );
+            lastWordGroupIndex = currentWordGroupIndex;
+          }
+
           await new Promise(requestAnimationFrame);
         }
 
-        currentTime += segment.duration;
+        currentTime += audioDuration;
       }
 
       mediaRecorder.stop();
@@ -726,7 +779,7 @@ export default function RedditVideoPage() {
         img.onload = () => {
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
           // Dibujar el texto sobre la imagen
-          drawMessage(ctx, currentSegment.text, isDarkMode);
+          drawMessage(ctx, currentSegment.text, isDarkMode, 1);
         };
       }
 
@@ -785,24 +838,41 @@ export default function RedditVideoPage() {
     };
   }, [isPrerendering, prerenderProgress]);
 
-  // Modificar la función drawMessage
+  // Modificar la función drawMessage para una mejor presentación
   const drawMessage = (
     ctx: CanvasRenderingContext2D,
     text: string,
-    isDarkMode: boolean
+    isDarkMode: boolean,
+    progress: number = 1,
+    currentWordGroup: number = 0
   ) => {
     const cardWidth = ctx.canvas.width * 0.8;
     const cardX = (ctx.canvas.width - cardWidth) / 2;
     const cardY = ctx.canvas.height * 0.7;
 
     // Dibujar fondo semi-transparente para el texto
-    ctx.fillStyle = isDarkMode ? 'rgba(0, 0, 0, 0.7)' : 'rgba(255, 255, 255, 0.7)';
+    ctx.fillStyle = isDarkMode ? 'rgba(0, 0, 0, 0.85)' : 'rgba(255, 255, 255, 0.85)';
     ctx.fillRect(cardX, cardY, cardWidth, 200);
 
-    // Dibujar el texto
+    // Dividir el texto en grupos de palabras
+    const wordGroups = splitIntoWordGroups(text);
+    const visibleText = wordGroups.slice(0, currentWordGroup + 1).join(' ');
+
+    // Configurar el estilo del texto
     ctx.fillStyle = isDarkMode ? '#FFFFFF' : '#000000';
-    ctx.font = '32px Arial';
-    wrapText(ctx, text, cardX + 20, cardY + 40, cardWidth - 40, 40);
+    ctx.font = 'bold 36px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Dibujar el texto visible
+    wrapText(
+      ctx,
+      visibleText,
+      cardX + cardWidth / 2,
+      cardY + 100,
+      cardWidth - 60,
+      45
+    );
   };
 
   // Añadir este useEffect para manejar la visibilidad y cierre de página
