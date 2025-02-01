@@ -1,50 +1,43 @@
 import { NextResponse } from 'next/server';
 
-export async function POST(request: Request) {
+export async function GET(request: Request) {
   try {
-    const { query } = await request.json();
-    console.log('🔍 Pexels API Request for query:', query);
+    // Obtener el query parameter
+    const { searchParams } = new URL(request.url);
+    const query = searchParams.get('query');
 
-    const apiKey = process.env.PEXELS_API_KEY;
-    console.log('🔑 API Key present:', !!apiKey);
+    if (!query) {
+      return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
+    }
 
-    const url = `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=1`;
-    console.log('🌐 Pexels API URL:', url);
+    console.log('🔍 Searching Pexels for:', query);
 
-    const response = await fetch(url, {
-      headers: {
-        Authorization: apiKey || '',
-      },
-    });
-
-    console.log('📡 Pexels API Response Status:', response.status);
-    console.log('📡 Pexels API Response Headers:', Object.fromEntries(response.headers));
+    // Hacer la petición a Pexels
+    const response = await fetch(
+      `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=1`,
+      {
+        headers: {
+          Authorization: process.env.PEXELS_API_KEY || '',
+        },
+      }
+    );
 
     if (!response.ok) {
-      console.error('❌ Pexels API Error. Status:', response.status);
-      const errorText = await response.text();
-      console.error('Error response:', errorText);
-      throw new Error(`Failed to fetch from Pexels: ${response.status} ${errorText}`);
+      console.error('❌ Pexels API error:', response.status, response.statusText);
+      throw new Error('Failed to fetch from Pexels API');
     }
 
     const data = await response.json();
-    console.log('📦 Pexels API Response Data:', {
+    console.log('✅ Pexels response received:', {
       totalResults: data.total_results,
-      page: data.page,
-      photosCount: data.photos?.length,
-      firstPhotoId: data.photos?.[0]?.id
+      photosFound: data.photos.length,
     });
 
     return NextResponse.json(data);
   } catch (error) {
     console.error('❌ Error in Pexels API route:', error);
-    console.error('Error details:', {
-      name: error.name,
-      message: error.message,
-      stack: error.stack
-    });
     return NextResponse.json(
-      { error: 'Failed to fetch images', details: error.message },
+      { error: 'Failed to fetch images' },
       { status: 500 }
     );
   }
