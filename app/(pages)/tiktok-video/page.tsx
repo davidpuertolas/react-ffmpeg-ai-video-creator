@@ -22,6 +22,7 @@ interface StoryData {
   segments: {
     content: string;
     timestamp: string;
+    imageDescription?: string;  // Add optional field for image description
   }[];
   participants: {
     user1: string;
@@ -2055,10 +2056,62 @@ export default function StoryVideoPage() {
       <h2 className="text-xl font-semibold mb-4">Create Story</h2>
 
       <div className="space-y-6">
-        {/* Narrator Section */}
+        {/* Generación de historia con IA */}
+        <div className="border-b pb-6">
+          <h3 className="text-sm font-medium text-gray-700 mb-2">
+            Generate Story with AI
+          </h3>
+          <div className="space-y-4">
+            <textarea
+              placeholder="Enter a prompt for your story (e.g., 'A magical adventure in an enchanted forest')"
+              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 border-gray-300 resize-none"
+              rows={3}
+              value={storyPrompt}
+              onChange={(e) => setStoryPrompt(e.target.value)}
+            />
+            <button
+              onClick={handleGenerateStory}
+              disabled={isGenerating || !storyPrompt.trim()}
+              className="w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isGenerating ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  Generating Story...
+                </>
+              ) : (
+                <>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                  </svg>
+                  Generate Story
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Título de la historia */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            Narrator Name
+            Story Title
+          </label>
+          <input
+            type="text"
+            value={storyData.title}
+            onChange={(e) => setStoryData(prev => ({
+              ...prev,
+              title: e.target.value
+            }))}
+            placeholder="Enter a title for your story..."
+            className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 border-gray-300"
+          />
+        </div>
+
+        {/* Narrador */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Narrator
           </label>
           <input
             type="text"
@@ -2067,84 +2120,74 @@ export default function StoryVideoPage() {
               ...prev,
               narrator: e.target.value
             }))}
-            placeholder="Enter narrator name..."
+            placeholder="Who will narrate the story?"
             className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 border-gray-300"
           />
         </div>
 
-        {/* Add Participants Section */}
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              User 1 Name
-            </label>
-            <input
-              type="text"
-              value={storyData.participants.user1}
-              onChange={(e) => setStoryData(prev => ({
-                ...prev,
-                participants: {
-                  ...prev.participants,
-                  user1: e.target.value
-                }
-              }))}
-              placeholder="Enter user 1 name..."
-              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 border-gray-300"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              User 2 Name
-            </label>
-            <input
-              type="text"
-              value={storyData.participants.user2}
-              onChange={(e) => setStoryData(prev => ({
-                ...prev,
-                participants: {
-                  ...prev.participants,
-                  user2: e.target.value
-                }
-              }))}
-              placeholder="Enter user 2 name..."
-              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 border-gray-300"
-            />
-          </div>
-        </div>
+        {/* Story Script Editor */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Story Script
+          </label>
+          <div className="border rounded-lg h-[500px] flex flex-col bg-gray-50">
+            {/* Script Preview */}
+            <div className="flex-1 p-4 overflow-y-auto space-y-4">
+              {storyData.segments.map((segment, index) => (
+                <div
+                  key={index}
+                  className="group relative bg-white rounded-lg p-4 border border-gray-200 hover:border-blue-300 transition-colors"
+                >
+                  {/* Tiempo estimado */}
+                  <div className="absolute top-2 right-2 text-xs text-gray-400">
+                    {`~${Math.ceil(segment.content.length / 15)}s`}
+                  </div>
 
-        {/* Story Interface */}
-        <div className="border rounded-lg h-[500px] flex flex-col">
-          {/* Story Segments Area */}
-          <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-gray-50">
-            {storyData.segments.map((segment, index) => (
-              <div key={index} className="bg-white rounded-lg p-4 border border-gray-200">
-                <p className="text-gray-800">{segment.content}</p>
-                <div className="text-xs mt-2 text-gray-500">{segment.timestamp}</div>
-              </div>
-            ))}
-          </div>
+                  {/* Contenido */}
+                  <p className="text-gray-800 pr-16">{segment.content}</p>
 
-          {/* Segment Input Area */}
-          <div className="border-t p-4 bg-white">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!newSegment.trim()) return;
+                  {/* Botones de acción */}
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                    <button
+                      onClick={() => {
+                        const newSegments = [...storyData.segments];
+                        newSegments.splice(index, 1);
+                        setStoryData(prev => ({
+                          ...prev,
+                          segments: newSegments
+                        }));
+                      }}
+                      className="p-1 text-red-600 hover:bg-red-50 rounded"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
 
-                const newSegmentObj = {
-                  content: newSegment,
-                  timestamp: new Date().toLocaleTimeString()
-                };
+            {/* Input para nuevo segmento */}
+            <div className="border-t p-4 bg-white">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!newSegment.trim()) return;
 
-                setStoryData(prev => ({
-                  ...prev,
-                  segments: [...prev.segments, newSegmentObj]
-                }));
-                setNewSegment('');
-              }}
-              className="flex gap-2"
-            >
-              <div className="flex-1">
+                  const newSegmentObj = {
+                    content: newSegment,
+                    timestamp: new Date().toLocaleTimeString()
+                  };
+
+                  setStoryData(prev => ({
+                    ...prev,
+                    segments: [...prev.segments, newSegmentObj]
+                  }));
+                  setNewSegment('');
+                }}
+                className="space-y-3"
+              >
                 <textarea
                   value={newSegment}
                   onChange={(e) => setNewSegment(e.target.value)}
@@ -2152,15 +2195,20 @@ export default function StoryVideoPage() {
                   className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 border-gray-300 resize-none"
                   rows={3}
                 />
-              </div>
-              <button
-                type="submit"
-                disabled={!newSegment.trim()}
-                className="self-end bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 disabled:opacity-50 transition-colors"
-              >
-                Add Segment
-              </button>
-            </form>
+                <div className="flex justify-between items-center">
+                  <div className="text-sm text-gray-500">
+                    {`Estimated duration: ~${Math.ceil(newSegment.length / 15)}s`}
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={!newSegment.trim()}
+                    className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 disabled:opacity-50 transition-colors"
+                  >
+                    Add Segment
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         </div>
 
@@ -2189,6 +2237,55 @@ export default function StoryVideoPage() {
       </div>
     </div>
   );
+
+  // Añadir estados necesarios
+  const [storyPrompt, setStoryPrompt] = useState('');
+
+
+  // Añadir función para generar la historia
+  const handleGenerateStory = async () => {
+    if (!storyPrompt.trim()) return;
+
+    try {
+      setIsGenerating(true);
+
+      const response = await fetch('/api/generate-story', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt: storyPrompt }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate story');
+      }
+
+      const data = await response.json();
+
+      // Actualizar el estado con la historia generada
+      setStoryData({
+        ...data,
+        participants: {
+          user1: 'Narrator',
+          user2: 'Character'
+        },
+        segments: data.segments.map(segment => ({
+          ...segment,
+          timestamp: new Date().toLocaleTimeString()
+        }))
+      });
+
+      // Limpiar el prompt
+      setStoryPrompt('');
+
+    } catch (error) {
+      console.error('Error generating story:', error);
+      alert('Failed to generate story. Please try again.');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   // Modify Step 2 voice selection to only show narrator voice
   // In the voice selection section of Step 2:
@@ -2619,7 +2716,7 @@ export default function StoryVideoPage() {
                   <div className="relative aspect-[9/16] bg-black rounded-lg overflow-hidden shadow-lg">
                     {prerenderedVideo ? (
                       <video
-                        key={URL.createObjectURL(prerenderedVideo)} // Añadir key para forzar la recarga
+                        key={URL.createObjectURL(prerenderedVideo)} // Add key to force reload
                         src={URL.createObjectURL(prerenderedVideo)}
                         className="absolute inset-0 w-full h-full"
                         controls
