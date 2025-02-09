@@ -18,7 +18,7 @@ export async function POST(req: Request) {
         },
         {
           role: "user",
-          content: `Genera un guión viral de TikTok sobre: ${topic} (2 segmentos maximo o estas despedido)`
+          content: `Genera un guión viral de TikTok sobre: ${topic}`
         }
       ],
       response_format: { type: "json_object" }
