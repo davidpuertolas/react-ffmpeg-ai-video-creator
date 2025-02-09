@@ -1,53 +1,233 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { OpenAI } from 'openai';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { toBlobURL } from '@ffmpeg/util';
+
+interface StorySegment {
+  timeStart: number;
+  timeEnd: number;
+  narration: string;
+  visualDescription: string;
+}
 
 export default function VideoProcessor() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [progress, setProgress] = useState(0);
+  const [storyPrompt, setStoryPrompt] = useState('');
+  const [segments, setSegments] = useState<StorySegment[]>([]);
+  const [ffmpeg, setFfmpeg] = useState<FFmpeg | null>(null);
+  const [resourcesGenerated, setResourcesGenerated] = useState(false);
+  const [audioBlobs, setAudioBlobs] = useState<Blob[]>([]);
+  const [srtContent, setSrtContent] = useState<string>('');
+  const [totalDuration, setTotalDuration] = useState(0);
 
-  const parseSRT = (content: string) => {
-    const subtitles = [];
-    const blocks = content.trim().split(/\n\s*\n/);
+  // Inicializar FFmpeg cuando el componente se monta
+  useEffect(() => {
+    const loadFFmpeg = async () => {
+      try {
+        console.log('🎬 Iniciando carga de FFmpeg...');
+        const ffmpegInstance = new FFmpeg();
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.4/dist/umd';
 
-    for (const block of blocks) {
-      const lines = block.split('\n');
-      if (lines.length >= 3) {
-        const times = lines[1].split(' --> ');
-        const startTime = timeToSeconds(times[0]);
-        const endTime = timeToSeconds(times[1]);
-        const text = lines.slice(2).join('\n');
-        subtitles.push({ startTime, endTime, text });
+        console.log('⚙️ Cargando archivos core de FFmpeg...');
+        await ffmpegInstance.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+
+        console.log('✅ FFmpeg cargado exitosamente');
+        setFfmpeg(ffmpegInstance);
+      } catch (error) {
+        console.error('❌ Error cargando FFmpeg:', error);
+        setMessage('Error inicializando el procesador de video');
       }
+    };
+
+    loadFFmpeg();
+  }, []);
+
+  const generateStorySegments = async (prompt: string) => {
+    const openai = new OpenAI({
+      apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
+      dangerouslyAllowBrowser: true
+    });
+
+    const systemPrompt = `Eres un guionista experto. Genera una historia de 60 segundos dividida en 2 segmentos de 10 segundos cada uno.
+    La historia debe estar basada en el siguiente prompt del usuario: "${prompt}".
+
+    Reglas importantes:
+    - Cada segmento debe durar exactamente 10 segundos
+    - La narración debe ser concisa y natural para caber en 10 segundos
+    - La descripción visual debe ser clara y realizable
+    - La historia debe tener un arco narrativo completo
+
+    Devuelve SOLO un JSON con el siguiente formato exacto:
+    {
+      "segments": [
+        {
+          "timeStart": 0,
+          "timeEnd": 10,
+          "narration": "texto para narrar en voz en off (10 segundos)",
+          "visualDescription": "descripción de lo que se ve en pantalla"
+        }
+      ]
+    }`;
+
+    try {
+      const completion = await openai.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt
+          },
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        temperature: 1,
+      });
+
+      const response = JSON.parse(completion.choices[0].message.content);
+      if (!response.segments || !Array.isArray(response.segments)) {
+        throw new Error('Formato de respuesta inválido');
+      }
+
+      setSegments(response.segments);
+      return response.segments;
+    } catch (error) {
+      console.error('Error generating story:', error);
+      throw new Error('Error al generar la historia: ' + (error.message || 'Error desconocido'));
     }
-    return subtitles;
   };
 
-  const timeToSeconds = (timeStr: string) => {
-    const [hours, minutes, seconds] = timeStr.split(':');
-    const [secs, ms] = seconds.split(',');
-    return parseFloat(hours) * 3600 +
-           parseFloat(minutes) * 60 +
-           parseFloat(secs) +
-           parseFloat(ms) / 1000;
+  const generateAudioForSegment = async (text: string, index: number) => {
+    const openai = new OpenAI({
+      apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
+      dangerouslyAllowBrowser: true
+    });
+
+    try {
+      const mp3 = await openai.audio.speech.create({
+        model: "tts-1",
+        voice: "alloy",
+        input: text,
+      });
+
+      const blob = new Blob([await mp3.arrayBuffer()], { type: 'audio/mpeg' });
+      return blob;
+    } catch (error) {
+      console.error(`Error generating audio for segment ${index}:`, error);
+      throw error;
+    }
   };
 
-  const processFiles = async (videoFile, audioFile, subtitleFile) => {
-    let ffmpeg = null;
+  const getAudioDuration = async (audioBlob: Blob): Promise<number> => {
+    const audioContext = new AudioContext();
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    return audioBuffer.duration;
+  };
+
+  const generateSRT = (segments: StorySegment[]) => {
+    return segments.map((segment, index) => {
+      const startTime = formatSRTTime(segment.timeStart);
+      const endTime = formatSRTTime(segment.timeEnd);
+      return `${index + 1}\n${startTime} --> ${endTime}\n${segment.narration}\n\n`;
+    }).join('');
+  };
+
+  const formatSRTTime = (seconds: number) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+  };
+
+  const downloadFile = (content: string | Blob, filename: string) => {
+    const url = content instanceof Blob
+      ? URL.createObjectURL(content)
+      : URL.createObjectURL(new Blob([content], { type: 'text/plain' }));
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const generateResources = async () => {
     try {
       setLoading(true);
-      setMessage('Initializing FFmpeg...');
-      setProgress(0);
+      setMessage('Iniciando generación de recursos...');
 
-      // Initialize FFmpeg
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.4/dist/umd';
-      ffmpeg = new FFmpeg();
+      // Generar audios y obtener sus duraciones
+      console.log('🎙️ Generando archivos de audio...');
+      const blobs: Blob[] = [];
+      let currentTime = 0;
+      const updatedSegments = [...segments];
 
-      let currentStep = 1;
-      const totalSteps = subtitleFile ? 4 : 3;
+      for (let i = 0; i < segments.length; i++) {
+        setProgress(Math.round((i / segments.length) * 100));
+        console.log(`Generando audio para segmento ${i + 1}...`);
+        const audioBlob = await generateAudioForSegment(segments[i].narration, i);
+        const duration = await getAudioDuration(audioBlob);
+        console.log(`Duración del audio ${i + 1}: ${duration} segundos`);
+
+        // Actualizar los tiempos del segmento basado en la duración real del audio
+        updatedSegments[i] = {
+          ...updatedSegments[i],
+          timeStart: currentTime,
+          timeEnd: currentTime + duration
+        };
+        currentTime += duration;
+
+        blobs.push(audioBlob);
+        downloadFile(audioBlob, `segment_${i + 1}.mp3`);
+      }
+
+      // Actualizar los segmentos con los tiempos correctos
+      setSegments(updatedSegments);
+      setAudioBlobs(blobs);
+
+      // Generar SRT con los tiempos actualizados DESPUÉS de tener todas las duraciones
+      console.log('📝 Generando archivo de subtítulos con tiempos reales...');
+      const srt = generateSRT(updatedSegments);
+      setSrtContent(srt);
+      downloadFile(srt, 'subtitles.srt');
+
+      console.log(`Duración total del audio: ${currentTime} segundos`);
+      setTotalDuration(currentTime); // Guardar la duración total
+
+      setProgress(100);
+      setMessage('¡Recursos generados con éxito!');
+      setResourcesGenerated(true);
+    } catch (error) {
+      console.error('Error generando recursos:', error);
+      setMessage(`Error: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generateFinalVideo = async () => {
+    if (!ffmpeg) {
+      setMessage('FFmpeg no está inicializado');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setMessage('Iniciando generación del video final...');
+      console.log('🎬 Comenzando proceso de video final');
 
       // Set up logging
       ffmpeg.on('log', ({ message }) => {
@@ -55,206 +235,221 @@ export default function VideoProcessor() {
       });
 
       ffmpeg.on('progress', ({ progress }) => {
-        // Adjust progress based on current step
-        const stepProgress = (currentStep - 1) * (100 / totalSteps) +
-                           (progress * (100 / totalSteps));
-        setProgress(Math.round(stepProgress));
-        setMessage(`Step ${currentStep}/${totalSteps}: ${getCurrentStepMessage(currentStep)} - ${Math.round(progress * 100)}%`);
+        const percentage = Math.round(progress * 100);
+        console.log(`Progress: ${percentage}%`);
+        setProgress(percentage);
+        setMessage(`Procesando video: ${percentage}%`);
       });
 
-      const getCurrentStepMessage = (step) => {
-        switch(step) {
-          case 1:
-            return 'Loading FFmpeg';
-          case 2:
-            return 'Loading input files';
-          case 3:
-            return subtitleFile ? 'Combining video and audio' : 'Processing final video';
-          case 4:
-            return 'Adding subtitles';
-          default:
-            return 'Processing';
-        }
-      };
+      // Cargar video de fondo
+      setProgress(10);
+      console.log('📼 Cargando video de Minecraft...');
+      const videoResponse = await fetch('/videos/minecraft-vertical.mp4');
+      const videoData = await videoResponse.arrayBuffer();
+      await ffmpeg.writeFile('input.mp4', new Uint8Array(videoData));
 
-      // Load FFmpeg
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-      });
-
-      currentStep = 2;
-      setMessage(`Step ${currentStep}/${totalSteps}: Loading input files...`);
-
-      // Write input files
-      await ffmpeg.writeFile('input.mp4', await fetchFile(videoFile));
-      await ffmpeg.writeFile('input.mp3', await fetchFile(audioFile));
-
-      currentStep = 3;
-      setMessage(`Step ${currentStep}/${totalSteps}: Processing...`);
-
-      if (subtitleFile) {
-        setMessage(`Step ${currentStep}/${totalSteps}: Adding video with subtitles...`);
-
-        // Cargar la fuente desde la carpeta public
-        const fontResponse = await fetch('/fonts/Inter-Bold.ttf');
-        const fontData = await fontResponse.arrayBuffer();
-        await ffmpeg.writeFile('Inter-Bold.ttf', new Uint8Array(fontData));
-
-        // Leer el contenido del archivo SRT
-        const srtContent = await subtitleFile.text();
-        const subtitles = parseSRT(srtContent);
-
-        // Generar el comando drawtext para cada subtítulo
-        const drawTextCommands = subtitles.map(sub =>
-          `drawtext=fontfile=Inter-Bold.ttf:` +
-          `text='${sub.text.replace(/'/g, "'\\\\\'")}':` + // Escapar comillas simples
-          `fontsize=36:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=5:` +
-          `x=(w-text_w)/2:y=h-th-20:` +
-          `enable='between(t,${sub.startTime},${sub.endTime})'`
-        ).join(',');
-
-        await ffmpeg.exec([
-          '-i', 'input.mp4',      // Entrada del archivo de video
-          '-i', 'input.mp3',      // Entrada del archivo de audio
-          '-c:v', 'libx264',      // Codec de video H.264
-          '-c:a', 'aac',          // Codec de audio AAC
-          '-map', '0:v:0',        // Mapea la primera pista de video del primer input
-          '-map', '1:a:0',        // Mapea la primera pista de audio del segundo input
-          '-vf', drawTextCommands,
-          '-shortest',            // Termina cuando el stream más corto acabe
-          '-preset', 'ultrafast', // Configuración de velocidad de codificación
-          '-y',                   // Sobrescribe el archivo de salida sin preguntar
-          'output.mp4'            // Archivo de salida
-        ]);
-
-        currentStep = 4;
-        setMessage(`Step ${currentStep}/${totalSteps}: Finalizing with subtitles...`);
-      } else {
-        // Combine only video and audio
-        setMessage(`Step ${currentStep}/${totalSteps}: Combining video and audio...`);
-        await ffmpeg.exec([
-          '-i', 'input.mp4',
-          '-i', 'input.mp3',
-          '-c:v', 'libx264',
-          '-c:a', 'aac',
-          '-map', '0:v:0',
-          '-map', '1:a:0',
-          '-shortest',
-          'output.mp4'
-        ]);
+      // Cargar audios
+      setProgress(20);
+      console.log('🔊 Cargando archivos de audio...');
+      for (let i = 0; i < audioBlobs.length; i++) {
+        const arrayBuffer = await audioBlobs[i].arrayBuffer();
+        await ffmpeg.writeFile(`segment_${i}.mp3`, new Uint8Array(arrayBuffer));
       }
 
-      // Read and download the output file
-      setMessage('Preparing download...');
-      const data = await ffmpeg.readFile('output.mp4');
+      // Crear archivo de concatenación
+      setProgress(30);
+      console.log('📝 Preparando concatenación de audio...');
+      const concatFile = audioBlobs.map((_, i) => `file 'segment_${i}.mp3'`).join('\n');
+      await ffmpeg.writeFile('concat.txt', concatFile);
+
+      // Concatenar audios
+      setProgress(40);
+      setMessage('Combinando audios...');
+      await ffmpeg.exec([
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'concat.txt',
+        '-c', 'copy',
+        'output.mp3'
+      ]);
+
+      // Generar el filtro de texto para cada segmento
+      const textFilters = segments.map((segment, index) => {
+        return `drawtext=fontfile=Inter-Bold.ttf:` +
+               `text='${segment.narration}':` +
+               `fontsize=24:` +
+               `fontcolor=white:` +
+               `box=1:` +
+               `boxcolor=black@0.5:` +
+               `boxborderw=5:` +
+               `x=(w-text_w)/2:` +
+               `y=h-th-20:` +
+               `enable='between(t,${segment.timeStart},${segment.timeEnd})'`;
+      }).join(',');
+
+      // Cargar la fuente
+      const fontResponse = await fetch('/fonts/Inter-Bold.ttf');
+      const fontData = await fontResponse.arrayBuffer();
+      await ffmpeg.writeFile('Inter-Bold.ttf', new Uint8Array(fontData));
+
+      console.log('🎥 Combinando video, audio y subtítulos...');
+      console.log('Filtros de texto:', textFilters);
+
+      await ffmpeg.exec([
+        '-i', 'input.mp4',          // Entrada del video original
+        '-i', 'output.mp3',         // Entrada del audio concatenado
+        '-vf', textFilters,         // Aplica los filtros de texto (subtítulos)
+        '-c:v', 'libx264',          // Codec de video H.264
+        '-map', '0:v:0', // Usa el video de input.mp4
+        '-map', '1:a:0', // Usa el audio de output.mp3
+
+        '-preset', 'ultrafast',      // Configuración de velocidad de codificación
+        '-tune', 'zerolatency',     // Optimiza para baja latencia
+        '-c:a', 'aac',              // Codec de audio AAC
+        '-b:a', '128k',             // Bitrate de audio 128kbps
+        '-ac', '2',                 // 2 canales de audio (estéreo)
+        '-ar', '44100',             // Frecuencia de muestreo de audio 44.1kHz
+        '-threads', '0',            // Usa todos los hilos disponibles
+        '-t', segments[segments.length - 1].timeEnd.toString(), // Duración total del video
+        '-shortest',                // Termina cuando el stream más corto acabe
+        '-progress', 'pipe:1',      // Muestra el progreso en la salida
+        '-y',                       // Sobrescribe archivo si existe
+        'final_output.mp4'          // Archivo de salida final
+      ]);
+
+      // Descargar video final
+      setProgress(95);
+      setMessage('Descargando video final...');
+      const data = await ffmpeg.readFile('final_output.mp4');
       const blob = new Blob([data], { type: 'video/mp4' });
-      const url = URL.createObjectURL(blob);
+      downloadFile(blob, 'video_final.mp4');
 
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'processed_video.mp4';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      setMessage('Processing completed successfully!');
+      setProgress(100);
+      setMessage('¡Video final generado con éxito!');
     } catch (error) {
-      console.error('Processing error:', error);
-      setMessage(`Error: ${error.message || 'Failed to process files'}`);
+      console.error('Error generando video final:', error);
+      setMessage(`Error: ${error.message}`);
     } finally {
-      if (ffmpeg) {
-        try {
-          await ffmpeg.terminate();
-        } catch (error) {
-          console.error('Error terminating FFmpeg:', error);
-        }
-      }
       setLoading(false);
+      setProgress(0);
+      try {
+        await ffmpeg.terminate();
+      } catch (error) {
+        console.error('Error terminando FFmpeg:', error);
+      }
     }
   };
 
   return (
     <div className="max-w-2xl mx-auto p-6 space-y-6">
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          const formData = new FormData(e.currentTarget);
-          const video = formData.get('video');
-          const audio = formData.get('audio');
-          const subtitles = formData.get('subtitles');
-
-          if (!video || !audio) {
-            setMessage('Please select both video and audio files');
-            return;
-          }
-
-          await processFiles(video, audio, subtitles || null);
-        }}
-        className="space-y-4"
-      >
+      {/* Paso 1: Generar Historia */}
+      <div className="border rounded-lg p-6 bg-white shadow-sm">
+        <h2 className="text-xl font-bold mb-4">Generador de Historia</h2>
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Video File (MP4)
+              ¿Sobre qué quieres que trate la historia? (60 segundos)
             </label>
-            <input
-              type="file"
-              name="video"
-              accept="video/mp4"
-              required
+            <textarea
+              value={storyPrompt}
+              onChange={(e) => setStoryPrompt(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              rows={4}
+              placeholder="Por ejemplo: Una historia sobre un gato que descubre que puede volar..."
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Audio File (MP3)
-            </label>
-            <input
-              type="file"
-              name="audio"
-              accept="audio/mp3"
-              required
-              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+          <button
+            onClick={async () => {
+              try {
+                setLoading(true);
+                setMessage('Generando historia...');
+                await generateStorySegments(storyPrompt);
+                setMessage('Historia generada con éxito!');
+              } catch (error) {
+                setMessage(`Error: ${error.message}`);
+              } finally {
+                setLoading(false);
+              }
+            }}
+            disabled={loading || !storyPrompt}
+            className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
+          >
+            Generar Historia
+          </button>
+        </div>
+      </div>
+
+      {/* Preview de la Historia */}
+      {segments.length > 0 && (
+        <div className="border rounded-lg p-6 bg-white shadow-sm">
+          <h2 className="text-xl font-bold mb-4">Historia Generada</h2>
+          <div className="space-y-4">
+            {segments.map((segment, index) => (
+              <div key={index} className="p-4 border rounded-md bg-gray-50">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-semibold text-blue-600">
+                    Segmento {index + 1}
+                  </span>
+                  <span className="text-sm text-gray-500">
+                    {segment.timeStart}s - {segment.timeEnd}s
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-700">Narración:</h4>
+                    <p className="text-sm text-gray-600 bg-white p-2 rounded">
+                      {segment.narration}
+                    </p>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-700">Descripción Visual:</h4>
+                    <p className="text-sm text-gray-500 italic bg-white p-2 rounded">
+                      {segment.visualDescription}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Subtitles (Optional, SRT)
-            </label>
-            <input
-              type="file"
-              name="subtitles"
-              accept=".srt"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <p className="mt-1 text-sm text-gray-500">
-              Make sure the SRT file is UTF-8 encoded
-            </p>
+          <div className="mt-6 space-y-4">
+            <button
+              onClick={generateResources}
+              disabled={loading}
+              className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            >
+              {loading ? 'Generando recursos...' : 'Generar Audio y Subtítulos'}
+            </button>
+
+            {resourcesGenerated && (
+              <button
+                onClick={generateFinalVideo}
+                disabled={loading}
+                className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
+              >
+                {loading ? 'Generando video...' : 'Generar Video Final'}
+              </button>
+            )}
           </div>
         </div>
+      )}
 
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
-        >
-          {loading ? 'Processing...' : 'Process Video'}
-        </button>
-      </form>
-
-      {(message || progress > 0) && (
-        <div className="mt-4 p-4 border rounded-md bg-gray-50">
-          <p className="text-sm text-gray-700">{message}</p>
-          {progress > 0 && (
+      {/* Mensaje de Estado con Barra de Progreso */}
+      {message && (
+        <div className={`mt-4 p-4 border rounded-md ${loading ? 'bg-blue-50' : 'bg-gray-50'}`}>
+          <div className="flex items-center space-x-3">
+            {loading && (
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+            )}
+            <p className="text-sm text-gray-700">{message}</p>
+          </div>
+          {loading && progress > 0 && (
             <div className="mt-2 w-full bg-gray-200 rounded-full h-2.5">
               <div
                 className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
                 style={{ width: `${progress}%` }}
-              />
+              ></div>
             </div>
           )}
         </div>
