@@ -5,11 +5,18 @@ import { OpenAI } from 'openai';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
 
+interface SubSegment {
+  timeStart: number;
+  timeEnd: number;
+  text: string;
+}
+
 interface StorySegment {
   timeStart: number;
   timeEnd: number;
   narration: string;
   visualDescription: string;
+  subSegments?: SubSegment[];
 }
 
 export default function VideoProcessor() {
@@ -135,11 +142,45 @@ export default function VideoProcessor() {
   };
 
   const generateSRT = (segments: StorySegment[]) => {
-    return segments.map((segment, index) => {
-      const startTime = formatSRTTime(segment.timeStart);
-      const endTime = formatSRTTime(segment.timeEnd);
-      return `${index + 1}\n${startTime} --> ${endTime}\n${segment.narration}\n\n`;
-    }).join('');
+    let srtContent = '';
+    let subtitleIndex = 1;
+
+    segments.forEach(segment => {
+      if (!segment.subSegments) {
+        // Dividir la narración en grupos de 3 palabras
+        const words = segment.narration.split(' ');
+        const subSegments: SubSegment[] = [];
+        const wordsPerSubSegment = 3;
+
+        // Calcular la duración por palabra (asumiendo distribución uniforme)
+        const segmentDuration = segment.timeEnd - segment.timeStart;
+        const durationPerWord = segmentDuration / words.length;
+
+        for (let i = 0; i < words.length; i += wordsPerSubSegment) {
+          const subSegmentWords = words.slice(i, i + wordsPerSubSegment);
+          const timeStart = segment.timeStart + (i * durationPerWord);
+          const timeEnd = timeStart + (subSegmentWords.length * durationPerWord);
+
+          subSegments.push({
+            timeStart,
+            timeEnd,
+            text: subSegmentWords.join(' ')
+          });
+        }
+
+        segment.subSegments = subSegments;
+      }
+
+      // Generar entradas SRT para cada subsegmento
+      segment.subSegments.forEach(subSegment => {
+        const startTime = formatSRTTime(subSegment.timeStart);
+        const endTime = formatSRTTime(subSegment.timeEnd);
+        srtContent += `${subtitleIndex}\n${startTime} --> ${endTime}\n${subSegment.text}\n\n`;
+        subtitleIndex++;
+      });
+    });
+
+    return srtContent;
   };
 
   const formatSRTTime = (seconds: number) => {
@@ -273,19 +314,21 @@ export default function VideoProcessor() {
         'output.mp3'
       ]);
 
-      // Generar el filtro de texto para cada segmento
-      const textFilters = segments.map((segment, index) => {
-        return `drawtext=fontfile=Inter-Bold.ttf:` +
-               `text='${segment.narration}':` +
-               `fontsize=24:` +
-               `fontcolor=white:` +
-               `box=1:` +
-               `boxcolor=black@0.5:` +
-               `boxborderw=5:` +
-               `x=(w-text_w)/2:` +
-               `y=h-th-20:` +
-               `enable='between(t,${segment.timeStart},${segment.timeEnd})'`;
-      }).join(',');
+      // Generar el filtro de texto para cada subsegmento
+      const textFilters = segments.flatMap(segment =>
+        segment.subSegments?.map(subSegment => {
+          return `drawtext=fontfile=Inter-Bold.ttf:` +
+                 `text='${subSegment.text}':` +
+                 `fontsize=24:` +
+                 `fontcolor=white:` +
+                 `box=1:` +
+                 `boxcolor=black@0.5:` +
+                 `boxborderw=5:` +
+                 `x=(w-text_w)/2:` +
+                 `y=h-th-20:` +
+                 `enable='between(t,${subSegment.timeStart},${subSegment.timeEnd})'`;
+        }) || []
+      ).join(',');
 
       // Cargar la fuente
       const fontResponse = await fetch('/fonts/Inter-Bold.ttf');
