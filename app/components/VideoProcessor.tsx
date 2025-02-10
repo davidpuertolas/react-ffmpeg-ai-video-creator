@@ -62,7 +62,7 @@ export default function VideoProcessor() {
       dangerouslyAllowBrowser: true
     });
 
-    const systemPrompt = `Eres un guionista experto. Genera una historia de 60 segundos dividida en 2 segmentos de 10 segundos cada uno.
+    const systemPrompt = `Eres un guionista experto. Genera una historia de 60 segundos dividida en 6 segmentos de 10 segundos cada uno. (para la demo actual, creemos solo 1 segmento con 2 frases separadas por un punto)
     La historia debe estar basada en el siguiente prompt del usuario: "${prompt}".
 
     Reglas importantes:
@@ -147,31 +147,37 @@ export default function VideoProcessor() {
 
     segments.forEach(segment => {
       if (!segment.subSegments) {
-        // Dividir la narración en grupos de 3 palabras
-        const words = segment.narration.split(' ');
+        const sentences = segment.narration.split('.').filter(s => s.trim());
         const subSegments: SubSegment[] = [];
-        const wordsPerSubSegment = 3;
 
-        // Calcular la duración por palabra (asumiendo distribución uniforme)
         const segmentDuration = segment.timeEnd - segment.timeStart;
-        const durationPerWord = segmentDuration / words.length;
+        const durationPerSentence = segmentDuration / sentences.length;
 
-        for (let i = 0; i < words.length; i += wordsPerSubSegment) {
-          const subSegmentWords = words.slice(i, i + wordsPerSubSegment);
-          const timeStart = segment.timeStart + (i * durationPerWord);
-          const timeEnd = timeStart + (subSegmentWords.length * durationPerWord);
+        sentences.forEach((sentence, sentenceIndex) => {
+          const words = sentence.trim().split(' ');
+          const wordsPerSubSegment = 3;
+          const durationPerWord = durationPerSentence / words.length;
 
-          subSegments.push({
-            timeStart,
-            timeEnd,
-            text: subSegmentWords.join(' ')
-          });
-        }
+          for (let i = 0; i < words.length; i += wordsPerSubSegment) {
+            const subSegmentWords = words.slice(i, i + wordsPerSubSegment);
+            const timeStart = segment.timeStart +
+                            (sentenceIndex * durationPerSentence) +
+                            (i * durationPerWord);
+            const timeEnd = timeStart + (subSegmentWords.length * durationPerWord);
+
+            if (subSegmentWords.length > 0) {
+              subSegments.push({
+                timeStart,
+                timeEnd,
+                text: normalizeText(subSegmentWords.join(' '))
+              });
+            }
+          }
+        });
 
         segment.subSegments = subSegments;
       }
 
-      // Generar entradas SRT para cada subsegmento
       segment.subSegments.forEach(subSegment => {
         const startTime = formatSRTTime(subSegment.timeStart);
         const endTime = formatSRTTime(subSegment.timeEnd);
@@ -317,23 +323,27 @@ export default function VideoProcessor() {
       // Generar el filtro de texto para cada subsegmento
       const textFilters = segments.flatMap(segment =>
         segment.subSegments?.map(subSegment => {
-          return `drawtext=fontfile=Inter-Bold.ttf:` +
-                 `text='${subSegment.text}':` +
-                 `fontsize=24:` +
+          const normalizedText = normalizeText(subSegment.text);
+          return `drawtext=fontfile=theboldfontesp.ttf:` +
+                 `text='${normalizedText}':` +
+                 `fontsize=80:` +
                  `fontcolor=white:` +
-                 `box=1:` +
-                 `boxcolor=black@0.5:` +
-                 `boxborderw=5:` +
+                 `borderw=8:` +
+                 `bordercolor=black:` +
+                 `shadowcolor=black@0.8:` +
+                 `shadowx=3:` +
+                 `shadowy=3:` +
                  `x=(w-text_w)/2:` +
-                 `y=h-th-20:` +
-                 `enable='between(t,${subSegment.timeStart},${subSegment.timeEnd})'`;
+                 `y=(h-text_h)/2:` +
+                 `enable='between(t,${subSegment.timeStart},${subSegment.timeEnd})':` +
+                 `alpha='if(lt(t,${subSegment.timeStart}+0.05),t-${subSegment.timeStart},1)'`;
         }) || []
       ).join(',');
 
       // Cargar la fuente
-      const fontResponse = await fetch('/fonts/Inter-Bold.ttf');
+      const fontResponse = await fetch('/fonts/theboldfontesp.ttf');
       const fontData = await fontResponse.arrayBuffer();
-      await ffmpeg.writeFile('Inter-Bold.ttf', new Uint8Array(fontData));
+      await ffmpeg.writeFile('theboldfontesp.ttf', new Uint8Array(fontData));
 
       console.log('🎥 Combinando video, audio y subtítulos...');
       console.log('Filtros de texto:', textFilters);
@@ -381,6 +391,15 @@ export default function VideoProcessor() {
         console.error('Error terminando FFmpeg:', error);
       }
     }
+  };
+
+  const normalizeText = (str: string) => {
+    return str
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // Elimina diacríticos
+      .toUpperCase()                   // Convierte a mayúsculas
+      //.replace(/ñ/g, 'ñ')              // Reemplaza ñ por n
+      //.replace(/Ñ/g, 'Ñ');             // Reemplaza Ñ por N
   };
 
   return (
