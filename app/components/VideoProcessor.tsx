@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { OpenAI } from 'openai';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
+import { TextToImage } from "deepinfra";
 
 interface SubSegment {
   timeStart: number;
@@ -19,6 +20,13 @@ interface StorySegment {
   subSegments?: SubSegment[];
 }
 
+enum ProcessStep {
+  INITIAL = 'initial',
+  STORY_GENERATED = 'story_generated',
+  GENERATING = 'generating',
+  COMPLETED = 'completed'
+}
+
 export default function VideoProcessor() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -30,6 +38,9 @@ export default function VideoProcessor() {
   const [audioBlobs, setAudioBlobs] = useState<Blob[]>([]);
   const [srtContent, setSrtContent] = useState<string>('');
   const [totalDuration, setTotalDuration] = useState(0);
+  const [currentStep, setCurrentStep] = useState<ProcessStep>(ProcessStep.INITIAL);
+  const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
+  const [finalVideoBlob, setFinalVideoBlob] = useState<Blob | null>(null);
 
   // Inicializar FFmpeg cuando el componente se monta
   useEffect(() => {
@@ -62,7 +73,7 @@ export default function VideoProcessor() {
       dangerouslyAllowBrowser: true
     });
 
-    const systemPrompt = `Eres un guionista experto. Genera una historia de 60 segundos dividida en 6 segmentos de 10 segundos cada uno. (para la demo actual, creemos solo 1 segmento con 2 frases separadas por un punto)
+    const systemPrompt = `Eres un guionista experto. Genera una historia de 60 segundos dividida en 6 segmentos de 10 segundos cada uno. (para la demo actual, creemos solo 3 segmentos)
     La historia debe estar basada en el siguiente prompt del usuario: "${prompt}".
 
     Reglas importantes:
@@ -106,6 +117,7 @@ export default function VideoProcessor() {
       }
 
       setSegments(response.segments);
+      setCurrentStep(ProcessStep.STORY_GENERATED);
       return response.segments;
     } catch (error) {
       console.error('Error generating story:', error);
@@ -211,107 +223,108 @@ export default function VideoProcessor() {
     URL.revokeObjectURL(url);
   };
 
-  const generateResources = async () => {
+  const generateFinalVideo = async () => {
     try {
       setLoading(true);
-      setMessage('Iniciando generación de recursos...');
+      setCurrentStep(ProcessStep.GENERATING);
 
-      // Generar audios y obtener sus duraciones
-      console.log('🎙️ Generando archivos de audio...');
-      const blobs: Blob[] = [];
-      let currentTime = 0;
+      // Step 1: Generate Audio Resources
+      setMessage('Generando archivos de audio...');
+      setProgress(0);
+      console.log('🎙️ Iniciando generación de audios...');
+
       const updatedSegments = [...segments];
+      let currentTime = 0;
+      const blobs: Blob[] = [];
 
-      for (let i = 0; i < segments.length; i++) {
-        setProgress(Math.round((i / segments.length) * 100));
-        console.log(`Generando audio para segmento ${i + 1}...`);
-        const audioBlob = await generateAudioForSegment(segments[i].narration, i);
+      // Generate all audio files first
+      for (let i = 0; i < updatedSegments.length; i++) {
+        setProgress(Math.round((i / segments.length) * 25));
+        setMessage(`Generando audio ${i + 1} de ${segments.length}...`);
+        console.log(`🎵 Generando audio para segmento ${i + 1}...`);
+
+        const audioBlob = await generateAudioForSegment(updatedSegments[i].narration, i);
         const duration = await getAudioDuration(audioBlob);
-        console.log(`Duración del audio ${i + 1}: ${duration} segundos`);
+        console.log(`✓ Audio ${i + 1} generado (duración: ${duration}s)`);
 
-        // Actualizar los tiempos del segmento basado en la duración real del audio
         updatedSegments[i] = {
           ...updatedSegments[i],
           timeStart: currentTime,
-          timeEnd: currentTime + duration
+          timeEnd: currentTime + duration,
+          subSegments: undefined // Resetear los subsegmentos para que se regeneren
         };
         currentTime += duration;
-
         blobs.push(audioBlob);
-        downloadFile(audioBlob, `segment_${i + 1}.mp3`);
       }
 
-      // Actualizar los segmentos con los tiempos correctos
       setSegments(updatedSegments);
       setAudioBlobs(blobs);
+      console.log('✅ Todos los audios generados correctamente');
 
-      // Generar SRT con los tiempos actualizados DESPUÉS de tener todas las duraciones
-      console.log('📝 Generando archivo de subtítulos con tiempos reales...');
-      const srt = generateSRT(updatedSegments);
+      // Step 2: Generate SRT with correct timings
+      setProgress(30);
+      setMessage('Generando subtítulos...');
+      console.log('📝 Generando archivo de subtítulos...');
+      const srt = generateSRT(updatedSegments); // Esto actualizará los subSegments
       setSrtContent(srt);
-      downloadFile(srt, 'subtitles.srt');
+      console.log('✅ Subtítulos generados correctamente');
 
-      console.log(`Duración total del audio: ${currentTime} segundos`);
-      setTotalDuration(currentTime); // Guardar la duración total
+      // Pequeña pausa para asegurar que todo está listo
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
-      setProgress(100);
-      setMessage('¡Recursos generados con éxito!');
-      setResourcesGenerated(true);
-    } catch (error) {
-      console.error('Error generando recursos:', error);
-      setMessage(`Error: ${error.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
+      if (!ffmpeg) {
+        throw new Error('FFmpeg no está inicializado');
+      }
 
-  const generateFinalVideo = async () => {
-    if (!ffmpeg) {
-      setMessage('FFmpeg no está inicializado');
-      return;
-    }
+      // Step 3: Initialize FFmpeg
+      setProgress(40);
+      setMessage('Preparando el procesador de video...');
+      console.log('🎬 Iniciando FFmpeg...');
 
-    try {
-      setLoading(true);
-      setMessage('Iniciando generación del video final...');
-      console.log('🎬 Comenzando proceso de video final');
-
-      // Set up logging
       ffmpeg.on('log', ({ message }) => {
-        console.log('FFmpeg Log:', message);
+        console.log('FFmpeg:', message);
       });
 
       ffmpeg.on('progress', ({ progress }) => {
-        const percentage = Math.round(progress * 100);
-        console.log(`Progress: ${percentage}%`);
+        const percentage = Math.round(progress * 50) + 40; // 40-90%
         setProgress(percentage);
-        setMessage(`Procesando video: ${percentage}%`);
+        setMessage(`Mezclando video y audio: ${Math.round(progress * 100)}%`);
       });
 
-      // Cargar video de fondo
-      setProgress(10);
-      console.log('📼 Cargando video de Minecraft...');
+      // Step 4: Load and prepare all files
+      setProgress(45);
+      setMessage('Cargando archivos necesarios...');
+      console.log('📼 Cargando video base...');
+
       const videoResponse = await fetch('/videos/minecraft-vertical.mp4');
       const videoData = await videoResponse.arrayBuffer();
       await ffmpeg.writeFile('input.mp4', new Uint8Array(videoData));
+      console.log('✅ Video base cargado');
 
-      // Cargar audios
-      setProgress(20);
-      console.log('🔊 Cargando archivos de audio...');
-      for (let i = 0; i < audioBlobs.length; i++) {
-        const arrayBuffer = await audioBlobs[i].arrayBuffer();
+      // Load font
+      console.log('�� Cargando fuente...');
+      const fontResponse = await fetch('/fonts/theboldfontesp.ttf');
+      const fontData = await fontResponse.arrayBuffer();
+      await ffmpeg.writeFile('theboldfontesp.ttf', new Uint8Array(fontData));
+      console.log('✅ Fuente cargada');
+
+      // Step 5: Process audio files
+      setProgress(50);
+      setMessage('Procesando archivos de audio...');
+      console.log('🔊 Preparando archivos de audio...');
+
+      for (let i = 0; i < blobs.length; i++) {
+        const arrayBuffer = await blobs[i].arrayBuffer();
         await ffmpeg.writeFile(`segment_${i}.mp3`, new Uint8Array(arrayBuffer));
+        console.log(`✓ Audio ${i + 1} preparado`);
       }
 
-      // Crear archivo de concatenación
-      setProgress(30);
-      console.log('📝 Preparando concatenación de audio...');
-      const concatFile = audioBlobs.map((_, i) => `file 'segment_${i}.mp3'`).join('\n');
+      // Create concat file and merge audio
+      console.log('🔄 Combinando archivos de audio...');
+      const concatFile = blobs.map((_, i) => `file 'segment_${i}.mp3'`).join('\n');
       await ffmpeg.writeFile('concat.txt', concatFile);
 
-      // Concatenar audios
-      setProgress(40);
-      setMessage('Combinando audios...');
+      setMessage('Combinando archivos de audio...');
       await ffmpeg.exec([
         '-f', 'concat',
         '-safe', '0',
@@ -319,9 +332,18 @@ export default function VideoProcessor() {
         '-c', 'copy',
         'output.mp3'
       ]);
+      console.log('✅ Audio combinado correctamente');
 
-      // Generar el filtro de texto para cada subsegmento
-      const textFilters = segments.flatMap(segment =>
+      // Pequeña pausa para asegurar que el audio está listo
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Step 6: Prepare text filters
+      setProgress(60);
+      setMessage('Preparando efectos de texto...');
+      console.log('✍️ Generando filtros de texto para subtítulos...');
+
+      // Asegurarnos de que estamos usando los segmentos actualizados con subSegments
+      const textFilters = updatedSegments.flatMap(segment =>
         segment.subSegments?.map(subSegment => {
           const normalizedText = normalizeText(subSegment.text);
           return `drawtext=fontfile=theboldfontesp.ttf:` +
@@ -340,53 +362,64 @@ export default function VideoProcessor() {
         }) || []
       ).join(',');
 
-      // Cargar la fuente
-      const fontResponse = await fetch('/fonts/theboldfontesp.ttf');
-      const fontData = await fontResponse.arrayBuffer();
-      await ffmpeg.writeFile('theboldfontesp.ttf', new Uint8Array(fontData));
+      // Asegurarnos de que hay filtros de texto
+      const finalFilter = textFilters || 'null';
+      console.log('Filtros configurados:', finalFilter);
 
-      console.log('🎥 Combinando video, audio y subtítulos...');
-      console.log('Filtros de texto:', textFilters);
+      console.log('✅ Filtros de texto preparados');
 
-      await ffmpeg.exec([
-        '-i', 'input.mp4',          // Entrada del video original
-        '-i', 'output.mp3',         // Entrada del audio concatenado
-        '-vf', textFilters,         // Aplica los filtros de texto (subtítulos)
-        '-c:v', 'libx264',          // Codec de video H.264
-        '-map', '0:v:0', // Usa el video de input.mp4
-        '-map', '1:a:0', // Usa el audio de output.mp3
+      // Step 7: Final video generation
+      setMessage('Generando video final...');
+      console.log('🎥 Comenzando generación del video final...');
 
-        '-preset', 'ultrafast',      // Configuración de velocidad de codificación
-        '-tune', 'zerolatency',     // Optimiza para baja latencia
-        '-c:a', 'aac',              // Codec de audio AAC
-        '-b:a', '128k',             // Bitrate de audio 128kbps
-        '-ac', '2',                 // 2 canales de audio (estéreo)
-        '-ar', '44100',             // Frecuencia de muestreo de audio 44.1kHz
-        '-threads', '0',            // Usa todos los hilos disponibles
-        '-t', segments[segments.length - 1].timeEnd.toString(), // Duración total del video
-        '-shortest',                // Termina cuando el stream más corto acabe
-        '-progress', 'pipe:1',      // Muestra el progreso en la salida
-        '-y',                       // Sobrescribe archivo si existe
-        'final_output.mp4'          // Archivo de salida final
-      ]);
+      const ffmpegArgs = [
+        '-i', 'input.mp4',
+        '-i', 'output.mp3',
+        '-vf', finalFilter,
+        '-c:v', 'libx264',
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-ac', '2',
+        '-ar', '44100',
+        '-threads', '0',
+        '-t', segments[segments.length - 1].timeEnd.toString(),
+        '-shortest',
+        '-progress', 'pipe:1',
+        '-y',
+        'final_output.mp4'
+      ];
 
-      // Descargar video final
+      console.log('Ejecutando FFmpeg con argumentos:', ffmpegArgs.join(' '));
+      await ffmpeg.exec(ffmpegArgs);
+
+      // Step 8: Download final video
       setProgress(95);
-      setMessage('Descargando video final...');
+      setMessage('Preparando video para descarga...');
+      console.log('📥 Preparando descarga...');
+
       const data = await ffmpeg.readFile('final_output.mp4');
       const blob = new Blob([data], { type: 'video/mp4' });
-      downloadFile(blob, 'video_final.mp4');
+      const videoUrl = URL.createObjectURL(blob);
+      setGeneratedVideoUrl(videoUrl);
+      setFinalVideoBlob(blob);
+      //downloadFile(blob, 'video_final.mp4'); //auto download
 
+      console.log('🎉 ¡Proceso completado con éxito!');
       setProgress(100);
-      setMessage('¡Video final generado con éxito!');
+      setMessage('¡Video generado con éxito!');
+      setCurrentStep(ProcessStep.COMPLETED);
     } catch (error) {
-      console.error('Error generando video final:', error);
+      console.error('❌ Error en el proceso:', error);
+      console.error('Detalles del error:', error.message);
       setMessage(`Error: ${error.message}`);
     } finally {
       setLoading(false);
-      setProgress(0);
       try {
-        await ffmpeg.terminate();
+        await ffmpeg?.terminate();
       } catch (error) {
         console.error('Error terminando FFmpeg:', error);
       }
@@ -402,120 +435,300 @@ export default function VideoProcessor() {
       //.replace(/Ñ/g, 'Ñ');             // Reemplaza Ñ por N
   };
 
-  return (
-    <div className="max-w-2xl mx-auto p-6 space-y-6">
-      {/* Paso 1: Generar Historia */}
-      <div className="border rounded-lg p-6 bg-white shadow-sm">
-        <h2 className="text-xl font-bold mb-4">Generador de Historia</h2>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              ¿Sobre qué quieres que trate la historia? (60 segundos)
-            </label>
-            <textarea
-              value={storyPrompt}
-              onChange={(e) => setStoryPrompt(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              rows={4}
-              placeholder="Por ejemplo: Una historia sobre un gato que descubre que puede volar..."
-            />
-          </div>
+  const updateSegmentNarration = (index: number, newNarration: string) => {
+    const updatedSegments = [...segments];
+    updatedSegments[index] = {
+      ...updatedSegments[index],
+      narration: newNarration
+    };
+    setSegments(updatedSegments);
+  };
 
-          <button
-            onClick={async () => {
-              try {
-                setLoading(true);
-                setMessage('Generando historia...');
-                await generateStorySegments(storyPrompt);
-                setMessage('Historia generada con éxito!');
-              } catch (error) {
-                setMessage(`Error: ${error.message}`);
-              } finally {
-                setLoading(false);
-              }
-            }}
-            disabled={loading || !storyPrompt}
-            className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          >
-            Generar Historia
-          </button>
+  const StepIndicator = ({ step, currentStep, title }: {
+    step: ProcessStep,
+    currentStep: ProcessStep,
+    title: string
+  }) => {
+    const isActive = currentStep === step;
+    const isCompleted = getStepNumber(currentStep) > getStepNumber(step);
+
+    return (
+      <div className={`flex items-center ${isCompleted ? 'text-green-600' : isActive ? 'text-blue-600' : 'text-gray-400'}`}>
+        <div className={`
+          flex items-center justify-center w-8 h-8 rounded-full border-2
+          ${isCompleted ? 'bg-green-100 border-green-600' :
+            isActive ? 'bg-blue-100 border-blue-600' :
+            'bg-gray-100 border-gray-400'}
+        `}>
+          {isCompleted ? (
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
+            </svg>
+          ) : (
+            <span>{getStepNumber(step)}</span>
+          )}
         </div>
+        <span className="ml-2 font-medium">{title}</span>
+      </div>
+    );
+  };
+
+  const getStepNumber = (step: ProcessStep): number => {
+    const steps = [
+      ProcessStep.INITIAL,
+      ProcessStep.STORY_GENERATED,
+      ProcessStep.GENERATING,
+      ProcessStep.COMPLETED
+    ];
+    return steps.indexOf(step) + 1;
+  };
+
+  const StepStatus = ({ completed, current, title, description }: {
+    completed: boolean;
+    current: boolean;
+    title: string;
+    description: string;
+  }) => (
+    <div className="flex items-start space-x-3">
+      <div className={`flex-shrink-0 h-5 w-5 relative mt-1 ${
+        completed ? 'text-green-600' :
+        current ? 'text-blue-600' : 'text-gray-300'
+      }`}>
+        {completed ? (
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        ) : current ? (
+          <div className="animate-pulse">
+            <div className="h-2 w-2 bg-blue-600 rounded-full absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2"></div>
+          </div>
+        ) : (
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 12h.01M12 12h.01M12 12h.01" />
+          </svg>
+        )}
+      </div>
+      <div>
+        <p className={`text-sm font-medium ${
+          completed ? 'text-green-800' :
+          current ? 'text-blue-800' : 'text-gray-500'
+        }`}>
+          {title}
+        </p>
+        <p className={`text-xs ${
+          completed ? 'text-green-600' :
+          current ? 'text-blue-600' : 'text-gray-400'
+        }`}>
+          {description}
+        </p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="max-w-4xl mx-auto p-6 space-y-8">
+      {/* Steps Indicator */}
+      <div className="flex justify-between mb-8">
+        <StepIndicator
+          step={ProcessStep.INITIAL}
+          currentStep={currentStep}
+          title="Generar Historia"
+        />
+        <StepIndicator
+          step={ProcessStep.STORY_GENERATED}
+          currentStep={currentStep}
+          title="Revisar Historia"
+        />
+        <StepIndicator
+          step={ProcessStep.GENERATING}
+          currentStep={currentStep}
+          title="Generando Video"
+        />
+        <StepIndicator
+          step={ProcessStep.COMPLETED}
+          currentStep={currentStep}
+          title="Video Listo"
+        />
       </div>
 
-      {/* Preview de la Historia */}
-      {segments.length > 0 && (
-        <div className="border rounded-lg p-6 bg-white shadow-sm">
-          <h2 className="text-xl font-bold mb-4">Historia Generada</h2>
+      {/* Step Content */}
+      <div className="border rounded-lg p-6 bg-white shadow-sm">
+        {currentStep === ProcessStep.INITIAL && (
           <div className="space-y-4">
-            {segments.map((segment, index) => (
-              <div key={index} className="p-4 border rounded-md bg-gray-50">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-semibold text-blue-600">
-                    Segmento {index + 1}
-                  </span>
-                  <span className="text-sm text-gray-500">
-                    {segment.timeStart}s - {segment.timeEnd}s
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-700">Narración:</h4>
-                    <p className="text-sm text-gray-600 bg-white p-2 rounded">
-                      {segment.narration}
-                    </p>
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-700">Descripción Visual:</h4>
-                    <p className="text-sm text-gray-500 italic bg-white p-2 rounded">
-                      {segment.visualDescription}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-6 space-y-4">
+            <h2 className="text-xl font-bold mb-4">Paso 1: Generar Historia</h2>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                ¿Sobre qué quieres que trate la historia? (60 segundos)
+              </label>
+              <textarea
+                value={storyPrompt}
+                onChange={(e) => setStoryPrompt(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                rows={4}
+                placeholder="Por ejemplo: Una historia sobre un gato que descubre que puede volar..."
+              />
+            </div>
             <button
-              onClick={generateResources}
-              disabled={loading}
-              className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
+              onClick={() => generateStorySegments(storyPrompt)}
+              disabled={loading || !storyPrompt}
+              className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {loading ? 'Generando recursos...' : 'Generar Audio y Subtítulos'}
+              Generar Historia
             </button>
+          </div>
+        )}
 
-            {resourcesGenerated && (
+        {currentStep >= ProcessStep.STORY_GENERATED && (
+          <div className="space-y-6">
+            <h2 className="text-xl font-bold mb-4">Historia Generada</h2>
+            <div className="space-y-4">
+              {segments.map((segment, index) => (
+                <div key={index} className="flex gap-4">
+                  {/* Contenido del segmento */}
+                  <div className="flex-grow">
+                    <div className="p-4 border rounded-md bg-gray-50">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-semibold text-blue-600">
+                          Segmento {index + 1}
+                        </span>
+                        <span className="text-sm text-gray-500">
+                          {segment.timeStart}s - {segment.timeEnd}s
+                        </span>
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-700 mb-2">Narración:</h4>
+                        <textarea
+                          value={segment.narration}
+                          onChange={(e) => updateSegmentNarration(index, e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm text-gray-600 resize-none bg-white"
+                          rows={4}
+                          style={{ minHeight: '100px' }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {currentStep === ProcessStep.STORY_GENERATED && (
               <button
                 onClick={generateFinalVideo}
                 disabled={loading}
-                className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
               >
-                {loading ? 'Generando video...' : 'Generar Video Final'}
+                Generar Video
               </button>
             )}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Mensaje de Estado con Barra de Progreso */}
-      {message && (
-        <div className={`mt-4 p-4 border rounded-md ${loading ? 'bg-blue-50' : 'bg-gray-50'}`}>
-          <div className="flex items-center space-x-3">
-            {loading && (
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-            )}
-            <p className="text-sm text-gray-700">{message}</p>
-          </div>
-          {loading && progress > 0 && (
-            <div className="mt-2 w-full bg-gray-200 rounded-full h-2.5">
-              <div
-                className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
-                style={{ width: `${progress}%` }}
-              ></div>
+        {currentStep === ProcessStep.GENERATING && (
+          <div className="space-y-6">
+            <h2 className="text-xl font-bold mb-4">Generando Video</h2>
+            <div className="space-y-4">
+              {/* Panel de progreso mejorado */}
+              <div className="bg-blue-50 p-6 rounded-lg border border-blue-100">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                      <span className="font-medium text-blue-800">{message}</span>
+                    </div>
+                    <span className="text-blue-600 font-semibold">{progress}%</span>
+                  </div>
+
+                  <div className="w-full bg-blue-100 rounded-full h-2.5">
+                    <div
+                      className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                      style={{ width: `${progress}%` }}
+                    ></div>
+                  </div>
+
+                  {/* Lista de pasos con estado */}
+                  <div className="mt-4 space-y-2">
+                    <StepStatus
+                      completed={progress >= 25}
+                      current={progress < 25}
+                      title="Generando Audios"
+                      description="Creando voces para cada segmento..."
+                    />
+                    <StepStatus
+                      completed={progress >= 40}
+                      current={progress >= 25 && progress < 40}
+                      title="Generando Subtítulos"
+                      description="Sincronizando texto con audio..."
+                    />
+                    <StepStatus
+                      completed={progress >= 60}
+                      current={progress >= 40 && progress < 60}
+                      title="Procesando Audio"
+                      description="Combinando segmentos de audio..."
+                    />
+                    <StepStatus
+                      completed={progress >= 90}
+                      current={progress >= 60 && progress < 90}
+                      title="Renderizando Video"
+                      description="Mezclando video, audio y subtítulos..."
+                    />
+                    <StepStatus
+                      completed={progress === 100}
+                      current={progress >= 90 && progress < 100}
+                      title="Finalizando"
+                      description="Preparando video final..."
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+
+        {currentStep === ProcessStep.COMPLETED && (
+          <div className="space-y-6">
+            <div className="bg-green-50 border border-green-200 rounded-lg p-6">
+              <div className="flex items-center space-x-3 mb-4">
+                <div className="flex-shrink-0">
+                  <svg className="h-6 w-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-medium text-green-800">¡Video Generado con Éxito!</h3>
+              </div>
+              <p className="text-sm text-green-600 mb-4">
+                Tu video ha sido generado y descargado exitosamente.
+              </p>
+
+              {/* Video Player */}
+              {generatedVideoUrl && (
+                <div className="mt-4">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">Preview del Video:</h4>
+                  <div className="relative aspect-[9/16] w-full max-w-sm mx-auto bg-black rounded-lg overflow-hidden">
+                    <video
+                      className="w-full h-full"
+                      controls
+                      src={generatedVideoUrl}
+                      poster="/thumbnail-placeholder.jpg"
+                    >
+                      Tu navegador no soporta la reproducción de video.
+                    </video>
+                  </div>
+                </div>
+              )}
+
+              {/* Botón de descarga */}
+              <button
+                onClick={() => finalVideoBlob && downloadFile(finalVideoBlob, 'video_final.mp4')}
+                className="mt-4 w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+              >
+                Descargar Video Nuevamente
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+
     </div>
   );
 }
