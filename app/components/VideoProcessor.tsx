@@ -18,6 +18,7 @@ interface StorySegment {
   narration: string;
   visualDescription: string;
   subSegments?: SubSegment[];
+  imageUrl?: string;
 }
 
 enum ProcessStep {
@@ -68,33 +69,37 @@ export default function VideoProcessor() {
   }, []);
 
   const generateStorySegments = async (prompt: string) => {
-    const openai = new OpenAI({
-      apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
-      dangerouslyAllowBrowser: true
-    });
-
-    const systemPrompt = `Eres un guionista experto. Genera una historia de 60 segundos dividida en 6 segmentos de 10 segundos cada uno. (para la demo actual, creemos solo 3 segmentos)
-    La historia debe estar basada en el siguiente prompt del usuario: "${prompt}".
-
-    Reglas importantes:
-    - Cada segmento debe durar exactamente 10 segundos
-    - La narración debe ser concisa y natural para caber en 10 segundos
-    - La descripción visual debe ser clara y realizable
-    - La historia debe tener un arco narrativo completo
-
-    Devuelve SOLO un JSON con el siguiente formato exacto:
-    {
-      "segments": [
-        {
-          "timeStart": 0,
-          "timeEnd": 10,
-          "narration": "texto para narrar en voz en off (10 segundos)",
-          "visualDescription": "descripción de lo que se ve en pantalla"
-        }
-      ]
-    }`;
-
     try {
+      setLoading(true);
+      setMessage('Generando historia...');
+
+      // Primero generamos la historia con GPT
+      const openai = new OpenAI({
+        apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
+        dangerouslyAllowBrowser: true
+      });
+
+      const systemPrompt = `Eres un guionista experto. Genera una historia de 60 segundos dividida en 6 segmentos de 10 segundos cada uno. (para la demo actual, creemos solo 2 segmentos)
+      La historia debe estar basada en el siguiente prompt del usuario: "${prompt}".
+
+      Reglas importantes:
+      - Cada segmento debe durar exactamente 10 segundos
+      - La narración debe ser concisa y natural para caber en 10 segundos
+      - La descripción visual debe ser clara y realizable
+      - La historia debe tener un arco narrativo completo
+
+      Devuelve SOLO un JSON con el siguiente formato exacto:
+      {
+        "segments": [
+          {
+            "timeStart": 0,
+            "timeEnd": 10,
+            "narration": "texto para narrar en voz en off (10 segundos)",
+            "visualDescription": "descripción de lo que se ve en pantalla"
+          }
+        ]
+      }`;
+
       const completion = await openai.chat.completions.create({
         messages: [
           {
@@ -116,12 +121,33 @@ export default function VideoProcessor() {
         throw new Error('Formato de respuesta inválido');
       }
 
-      setSegments(response.segments);
+      // Ahora generamos las imágenes para cada segmento
+      setMessage('Generando imágenes para la historia...');
+      const segmentsWithImages = [...response.segments];
+
+      for (let i = 0; i < segmentsWithImages.length; i++) {
+        setMessage(`Generando imagen ${i + 1} de ${segmentsWithImages.length}...`);
+        try {
+          const imageUrl = await generateImageForSegment(segmentsWithImages[i].visualDescription);
+          segmentsWithImages[i] = {
+            ...segmentsWithImages[i],
+            imageUrl
+          };
+        } catch (error) {
+          console.error(`Error generando imagen para segmento ${i}:`, error);
+          // Continuamos con el siguiente segmento si hay error
+        }
+      }
+
+      setSegments(segmentsWithImages);
       setCurrentStep(ProcessStep.STORY_GENERATED);
-      return response.segments;
+      setMessage('Historia e imágenes generadas con éxito!');
+      return segmentsWithImages;
     } catch (error) {
       console.error('Error generating story:', error);
       throw new Error('Error al generar la historia: ' + (error.message || 'Error desconocido'));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -228,16 +254,12 @@ export default function VideoProcessor() {
       setLoading(true);
       setCurrentStep(ProcessStep.GENERATING);
 
-      // Step 1: Generate Audio Resources
-      setMessage('Generando archivos de audio...');
-      setProgress(0);
-      console.log('🎙️ Iniciando generación de audios...');
-
+      // Primero generamos y medimos todos los audios
       const updatedSegments = [...segments];
       let currentTime = 0;
       const blobs: Blob[] = [];
 
-      // Generate all audio files first
+      // Generate all audio files first and get exact durations
       for (let i = 0; i < updatedSegments.length; i++) {
         setProgress(Math.round((i / segments.length) * 25));
         setMessage(`Generando audio ${i + 1} de ${segments.length}...`);
@@ -251,7 +273,7 @@ export default function VideoProcessor() {
           ...updatedSegments[i],
           timeStart: currentTime,
           timeEnd: currentTime + duration,
-          subSegments: undefined // Resetear los subsegmentos para que se regeneren
+          subSegments: undefined
         };
         currentTime += duration;
         blobs.push(audioBlob);
@@ -259,7 +281,6 @@ export default function VideoProcessor() {
 
       setSegments(updatedSegments);
       setAudioBlobs(blobs);
-      console.log('✅ Todos los audios generados correctamente');
 
       // Step 2: Generate SRT with correct timings
       setProgress(30);
@@ -293,16 +314,47 @@ export default function VideoProcessor() {
 
       // Step 4: Load and prepare all files
       setProgress(45);
-      setMessage('Cargando archivos necesarios...');
-      console.log('📼 Cargando video base...');
+      setMessage('Preparando imágenes...');
+      console.log('🖼️ Preparando imágenes para el video...');
 
-      const videoResponse = await fetch('/videos/minecraft-vertical.mp4');
-      const videoData = await videoResponse.arrayBuffer();
-      await ffmpeg.writeFile('input.mp4', new Uint8Array(videoData));
-      console.log('✅ Video base cargado');
+      // Crear un archivo de entrada para concatenar las imágenes con duraciones exactas
+      let inputFileContent = '';
+      for (let i = 0; i < updatedSegments.length; i++) {
+        const segment = updatedSegments[i];
+        if (!segment.imageUrl) continue;
 
-      // Load font
-      console.log('�� Cargando fuente...');
+        const imageResponse = await fetch(segment.imageUrl);
+        const imageData = await imageResponse.arrayBuffer();
+        await ffmpeg.writeFile(`image_${i}.jpg`, new Uint8Array(imageData));
+
+        const exactDuration = segment.timeEnd - segment.timeStart;
+        console.log(`Imagen ${i + 1}: duración=${exactDuration}s (${segment.timeStart}s - ${segment.timeEnd}s)`);
+
+        // Asegurarnos de que la duración es precisa
+        inputFileContent += `file 'image_${i}.jpg'\nduration ${exactDuration.toFixed(6)}\n`;
+      }
+      // Repetir la última imagen por un frame
+      inputFileContent += `file 'image_${updatedSegments.length - 1}.jpg'\nduration 0.033\n`;
+
+      await ffmpeg.writeFile('image_list.txt', inputFileContent);
+      console.log('Contenido del archivo de imágenes:', inputFileContent);
+
+      // Generar video base con framerate consistente
+      await ffmpeg.exec([
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'image_list.txt',
+        '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30',
+        '-vsync', '1', // Sincronización de video más estricta
+        '-pix_fmt', 'yuv420p',
+        '-r', '30',
+        'input.mp4'
+      ]);
+
+      console.log('✅ Video base generado a partir de imágenes');
+
+      // Cargar la fuente ANTES de preparar los filtros de texto
+      console.log('🎨 Cargando fuente...');
       const fontResponse = await fetch('/fonts/theboldfontesp.ttf');
       const fontData = await fontResponse.arrayBuffer();
       await ffmpeg.writeFile('theboldfontesp.ttf', new Uint8Array(fontData));
@@ -377,6 +429,7 @@ export default function VideoProcessor() {
         '-i', 'output.mp3',
         '-vf', finalFilter,
         '-c:v', 'libx264',
+        '-r', '30',
         '-map', '0:v:0',
         '-map', '1:a:0',
         '-preset', 'ultrafast',
@@ -386,8 +439,10 @@ export default function VideoProcessor() {
         '-ac', '2',
         '-ar', '44100',
         '-threads', '0',
-        '-t', segments[segments.length - 1].timeEnd.toString(),
+        '-t', updatedSegments[updatedSegments.length - 1].timeEnd.toString(),
         '-shortest',
+        '-async', '1',
+        '-vsync', '1',
         '-progress', 'pipe:1',
         '-y',
         'final_output.mp4'
@@ -525,6 +580,28 @@ export default function VideoProcessor() {
     </div>
   );
 
+  const generateImageForSegment = async (visualDescription: string): Promise<string> => {
+    try {
+      const response = await fetch('/api/generate-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt: visualDescription }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate image');
+      }
+
+      const data = await response.json();
+      return data.imageUrl;
+    } catch (error) {
+      console.error('Error generating image:', error);
+      throw error;
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-8">
       {/* Steps Indicator */}
@@ -584,6 +661,21 @@ export default function VideoProcessor() {
             <div className="space-y-4">
               {segments.map((segment, index) => (
                 <div key={index} className="flex gap-4">
+                  {/* Imagen generada */}
+                  <div className="w-48 h-48 flex-shrink-0 bg-gray-200 rounded-lg overflow-hidden">
+                    {segment.imageUrl ? (
+                      <img
+                        src={segment.imageUrl}
+                        alt={`Imagen para segmento ${index + 1}`}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-600"></div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Contenido del segmento */}
                   <div className="flex-grow">
                     <div className="p-4 border rounded-md bg-gray-50">
