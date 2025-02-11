@@ -121,28 +121,35 @@ export default function VideoProcessor() {
         throw new Error('Formato de respuesta inválido');
       }
 
-      // Ahora generamos las imágenes para cada segmento
+      // Ahora generamos las imágenes para cada segmento en paralelo
       setMessage('Generando imágenes para la historia...');
       const segmentsWithImages = [...response.segments];
 
-      for (let i = 0; i < segmentsWithImages.length; i++) {
-        setMessage(`Generando imagen ${i + 1} de ${segmentsWithImages.length}...`);
-        try {
-          const imageUrl = await generateImageForSegment(segmentsWithImages[i].visualDescription);
-          segmentsWithImages[i] = {
-            ...segmentsWithImages[i],
-            imageUrl
-          };
-        } catch (error) {
-          console.error(`Error generando imagen para segmento ${i}:`, error);
-          // Continuamos con el siguiente segmento si hay error
-        }
-      }
+      try {
+        const imagePromises = segmentsWithImages.map((segment, index) => {
+          setMessage(`Generando imágenes ${index + 1} de ${segmentsWithImages.length}...`);
+          return generateImageForSegment(segment.visualDescription)
+            .catch(error => {
+              console.error(`Error generando imagen ${index + 1}:`, error);
+              return null; // Retornamos null si falla la generación
+            });
+        });
 
-      setSegments(segmentsWithImages);
-      setCurrentStep(ProcessStep.STORY_GENERATED);
-      setMessage('Historia e imágenes generadas con éxito!');
-      return segmentsWithImages;
+        const imageUrls = await Promise.all(imagePromises);
+
+        // Actualizamos los segmentos con las URLs de las imágenes
+        segmentsWithImages.forEach((segment, index) => {
+          segment.imageUrl = imageUrls[index] || undefined;
+        });
+
+        setSegments(segmentsWithImages);
+        setCurrentStep(ProcessStep.STORY_GENERATED);
+        setMessage('Historia e imágenes generadas con éxito!');
+        return segmentsWithImages;
+      } catch (error) {
+        console.error('Error generando imágenes:', error);
+        throw new Error('Error al generar las imágenes: ' + (error.message || 'Error desconocido'));
+      }
     } catch (error) {
       console.error('Error generating story:', error);
       throw new Error('Error al generar la historia: ' + (error.message || 'Error desconocido'));
@@ -339,15 +346,21 @@ export default function VideoProcessor() {
       await ffmpeg.writeFile('image_list.txt', inputFileContent);
       console.log('Contenido del archivo de imágenes:', inputFileContent);
 
-      // Generar video base con framerate consistente
+      // Generar video base con framerate consistente y optimizado para velocidad
       await ffmpeg.exec([
         '-f', 'concat',
         '-safe', '0',
         '-i', 'image_list.txt',
         '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30',
-        '-vsync', '1', // Sincronización de video más estricta
+        '-vsync', '1',
         '-pix_fmt', 'yuv420p',
         '-r', '30',
+        '-preset', 'ultrafast',  // Prioriza velocidad sobre calidad
+        '-tune', 'fastdecode',   // Optimiza para decodificación rápida
+        '-threads', '0',         // Usa todos los threads disponibles
+        '-c:v', 'libx264',      // Usar codec H.264
+        '-crf', '28',           // Calidad más baja = más rápido (rango 0-51, default 23)
+        '-movflags', '+faststart', // Optimiza para inicio rápido
         'input.mp4'
       ]);
 
@@ -813,7 +826,7 @@ export default function VideoProcessor() {
                 onClick={() => finalVideoBlob && downloadFile(finalVideoBlob, 'video_final.mp4')}
                 className="mt-4 w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
               >
-                Descargar Video Nuevamente
+                Descargar Video
               </button>
             </div>
           </div>
