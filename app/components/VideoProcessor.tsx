@@ -79,26 +79,42 @@ export default function VideoProcessor() {
         dangerouslyAllowBrowser: true
       });
 
-      const systemPrompt = `Eres un guionista experto. Genera una historia de 60 segundos dividida en 6 segmentos de 10 segundos cada uno. (para la demo actual, creemos solo 2 segmentos)
-      La historia debe estar basada en el siguiente prompt del usuario: "${prompt}".
+      const systemPrompt = `You are an expert storyteller and TIKTOK video script writer. Create a captivating 40/60-second story divided into segments (for the demo lets generate just one segment).
+The story/video should be based on the following user prompt: "${prompt}".
 
-      Reglas importantes:
-      - Cada segmento debe durar exactamente 10 segundos
-      - La narración debe ser concisa y natural para caber en 10 segundos
-      - La descripción visual debe ser clara y realizable
-      - La historia debe tener un arco narrativo completo
+Key requirements:
+1. Story Structure:
+- Start with a powerful hook in the first seconds to grab attention
+- Build tension and intrigue throughout if needed, if the type of video is not a story, just create the best for it.
+- End with a satisfying or surprising conclusion
 
-      Devuelve SOLO un JSON con el siguiente formato exacto:
-      {
-        "segments": [
-          {
-            "timeStart": 0,
-            "timeEnd": 10,
-            "narration": "texto para narrar en voz en off (10 segundos)",
-            "visualDescription": "descripción de lo que se ve en pantalla"
-          }
-        ]
-      }`;
+2. Narration Guidelines:
+- Keep narration concise and natural to fit 10 seconds
+- Use engaging, conversational language
+- Create emotional connection through vivid descriptions
+- Maintain clear pacing and rhythm
+
+3. Visual Descriptions:
+- Format as SDXL prompts
+- Include key style elements: (cinematic, dramatic lighting, high detail, 8k uhd)
+- Specify camera angles and shot types
+- Add artistic direction (color palette, mood, atmosphere)
+- Focus on the main subject and important details
+
+Example Visual Description Format:
+"close-up shot of [subject], [specific details], [lighting], [style elements], [atmosphere], cinematic, dramatic lighting, high detail, 8k uhd"
+
+Return ONLY a JSON with this exact format:
+{
+  "segments": [
+    {
+      "timeStart": 0,
+      "timeEnd": X,
+      "narration": "engaging narration text",
+      "visualDescription": "SDXL-optimized visual description"
+    }
+  ]
+}`;
 
       const completion = await openai.chat.completions.create({
         messages: [
@@ -117,6 +133,7 @@ export default function VideoProcessor() {
       });
 
       const response = JSON.parse(completion.choices[0].message.content);
+      console.log(response);
       if (!response.segments || !Array.isArray(response.segments)) {
         throw new Error('Formato de respuesta inválido');
       }
@@ -256,6 +273,22 @@ export default function VideoProcessor() {
     URL.revokeObjectURL(url);
   };
 
+  const getRandomEffect = (index: number, duration: number) => {
+    const effects = [
+      // Zoom in desde el centro
+      `zoompan=z='min(zoom+0.002,1.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`,
+      // Zoom out desde el centro
+      `zoompan=z='if(eq(on,1),1.2,max(1.2-0.002*on,1))'`,
+      // Pan de izquierda a derecha
+      `zoompan=z=1.1:x='if(eq(on,1),0,min(iw*0.1,iw*0.1*on/($duration*30)))':y='ih/2-(ih/zoom/2)'`,
+      // Pan de arriba a abajo
+      `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='if(eq(on,1),0,min(ih*0.1,ih*0.1*on/($duration*30)))'`
+    ];
+
+    // Reemplazar $duration con la duración real
+    return effects[index % effects.length].replace('$duration', duration.toString());
+  };
+
   const generateFinalVideo = async () => {
     try {
       setLoading(true);
@@ -311,6 +344,9 @@ export default function VideoProcessor() {
 
       ffmpeg.on('log', ({ message }) => {
         console.log('FFmpeg:', message);
+        if (message.includes('Error') || message.includes('error')) {
+          setMessage(`Error en FFmpeg: ${message}`);
+        }
       });
 
       ffmpeg.on('progress', ({ progress }) => {
@@ -326,6 +362,9 @@ export default function VideoProcessor() {
 
       // Crear un archivo de entrada para concatenar las imágenes con duraciones exactas
       let inputFileContent = '';
+      let filterComplex = '';
+
+      // Primero añadimos los inputs
       for (let i = 0; i < updatedSegments.length; i++) {
         const segment = updatedSegments[i];
         if (!segment.imageUrl) continue;
@@ -335,34 +374,47 @@ export default function VideoProcessor() {
         await ffmpeg.writeFile(`image_${i}.jpg`, new Uint8Array(imageData));
 
         const exactDuration = segment.timeEnd - segment.timeStart;
-        console.log(`Imagen ${i + 1}: duración=${exactDuration}s (${segment.timeStart}s - ${segment.timeEnd}s)`);
-
-        // Asegurarnos de que la duración es precisa
         inputFileContent += `file 'image_${i}.jpg'\nduration ${exactDuration.toFixed(6)}\n`;
       }
-      // Repetir la última imagen por un frame
+
+      // Añadir la última imagen por un frame
       inputFileContent += `file 'image_${updatedSegments.length - 1}.jpg'\nduration 0.033\n`;
-
       await ffmpeg.writeFile('image_list.txt', inputFileContent);
-      console.log('Contenido del archivo de imágenes:', inputFileContent);
 
-      // Generar video base con framerate consistente y optimizado para velocidad
+      // Generar el filter complex
+      filterComplex = '[0:v]';
+      filterComplex += 'scale=1080:1920:force_original_aspect_ratio=increase,';
+      filterComplex += 'crop=1080:1920,';
+      filterComplex += 'zoompan=z=\'min(zoom+0.001,1.5)\':';
+      filterComplex += 'x=\'iw/2-(iw/zoom/2)\':';
+      filterComplex += 'y=\'ih/2-(ih/zoom/2)\':';
+      filterComplex += 'd=125:s=1080x1920:fps=30';
+      filterComplex += '[v]';
+
+      // Generar el video base con un solo efecto de zoom
       await ffmpeg.exec([
         '-f', 'concat',
         '-safe', '0',
         '-i', 'image_list.txt',
-        '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30',
+        '-filter_complex', filterComplex,
+        '-map', '[v]',
         '-vsync', '1',
         '-pix_fmt', 'yuv420p',
         '-r', '30',
-        '-preset', 'ultrafast',  // Prioriza velocidad sobre calidad
-        '-tune', 'fastdecode',   // Optimiza para decodificación rápida
-        '-threads', '0',         // Usa todos los threads disponibles
-        '-c:v', 'libx264',      // Usar codec H.264
-        '-crf', '28',           // Calidad más baja = más rápido (rango 0-51, default 23)
-        '-movflags', '+faststart', // Optimiza para inicio rápido
+        '-preset', 'ultrafast',
+        '-tune', 'fastdecode',
+        '-threads', '0',
+        '-c:v', 'libx264',
+        '-crf', '28',
+        '-movflags', '+faststart',
         'input.mp4'
       ]);
+
+      // Verificar que el archivo se creó correctamente
+      const fileExists = await ffmpeg.readFile('input.mp4').then(() => true).catch(() => false);
+      if (!fileExists) {
+        throw new Error('Error generando el video base');
+      }
 
       console.log('✅ Video base generado a partir de imágenes');
 
@@ -410,9 +462,14 @@ export default function VideoProcessor() {
       // Asegurarnos de que estamos usando los segmentos actualizados con subSegments
       const textFilters = updatedSegments.flatMap(segment =>
         segment.subSegments?.map(subSegment => {
-          const normalizedText = normalizeText(subSegment.text);
+          const escapedText = subSegment.text
+            .replace(/'/g, "'\\''") // Escapar comillas simples
+            .replace(/:/g, "\\:") // Escapar dos puntos
+            .replace(/\[/g, "\\[") // Escapar corchetes
+            .replace(/\]/g, "\\]"); // Escapar corchetes
+
           return `drawtext=fontfile=theboldfontesp.ttf:` +
-                 `text='${normalizedText}':` +
+                 `text='${escapedText}':`+
                  `fontsize=80:` +
                  `fontcolor=white:` +
                  `borderw=8:` +
@@ -456,7 +513,6 @@ export default function VideoProcessor() {
         '-shortest',
         '-async', '1',
         '-vsync', '1',
-        '-progress', 'pipe:1',
         '-y',
         'final_output.mp4'
       ];
@@ -481,9 +537,9 @@ export default function VideoProcessor() {
       setMessage('¡Video generado con éxito!');
       setCurrentStep(ProcessStep.COMPLETED);
     } catch (error) {
-      console.error('❌ Error en el proceso:', error);
-      console.error('Detalles del error:', error.message);
-      setMessage(`Error: ${error.message}`);
+      console.error('Error detallado:', error);
+      setMessage(`Error generando el video: ${error.message}`);
+      throw error;
     } finally {
       setLoading(false);
       try {
