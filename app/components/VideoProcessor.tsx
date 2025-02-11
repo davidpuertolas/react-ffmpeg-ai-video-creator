@@ -79,7 +79,7 @@ export default function VideoProcessor() {
         dangerouslyAllowBrowser: true
       });
 
-      const systemPrompt = `You are an expert storyteller and TIKTOK video script writer. Create a captivating 40/60-second story divided into segments (for the demo lets generate just one segment).
+      const systemPrompt = `You are an expert storyteller and TIKTOK video script writer. Create a captivating 40/60-second story divided into segments.
 The story/video should be based on the following user prompt: "${prompt}".
 
 Key requirements:
@@ -100,6 +100,8 @@ Key requirements:
 - Specify camera angles and shot types
 - Add artistic direction (color palette, mood, atmosphere)
 - Focus on the main subject and important details
+- Make them so clickbaity, engaging and exagerated as possible.
+- Imagine that each image is a tiktok video thumbnail, cant be a plain image of a field if talking about the area51, must be a big eye catching alien or something related to the story. (this is an example, but you get the point)
 
 Example Visual Description Format:
 "close-up shot of [subject], [specific details], [lighting], [style elements], [atmosphere], cinematic, dramatic lighting, high detail, 8k uhd"
@@ -360,11 +362,9 @@ Return ONLY a JSON with this exact format:
       setMessage('Preparando imágenes...');
       console.log('🖼️ Preparando imágenes para el video...');
 
-      // Crear un archivo de entrada para concatenar las imágenes con duraciones exactas
-      let inputFileContent = '';
       let filterComplex = '';
 
-      // Primero añadimos los inputs
+      // Primero creamos los inputs para cada imagen y aplicamos el efecto de zoom a cada una
       for (let i = 0; i < updatedSegments.length; i++) {
         const segment = updatedSegments[i];
         if (!segment.imageUrl) continue;
@@ -372,30 +372,39 @@ Return ONLY a JSON with this exact format:
         const imageResponse = await fetch(segment.imageUrl);
         const imageData = await imageResponse.arrayBuffer();
         await ffmpeg.writeFile(`image_${i}.jpg`, new Uint8Array(imageData));
-
-        const exactDuration = segment.timeEnd - segment.timeStart;
-        inputFileContent += `file 'image_${i}.jpg'\nduration ${exactDuration.toFixed(6)}\n`;
       }
 
-      // Añadir la última imagen por un frame
-      inputFileContent += `file 'image_${updatedSegments.length - 1}.jpg'\nduration 0.033\n`;
-      await ffmpeg.writeFile('image_list.txt', inputFileContent);
+      // Construir el filter complex para cada segmento
+      for (let i = 0; i < updatedSegments.length; i++) {
+        // Cada imagen tendrá su propio input con loop y trim
+        filterComplex += `[${i}:v]`;
+        filterComplex += 'scale=1080:1920:force_original_aspect_ratio=increase,';
+        filterComplex += 'crop=1080:1920,';
+        filterComplex += 'zoompan=z=\'min(zoom+0.001,1.5)\':';
+        filterComplex += 'x=\'iw/2-(iw/zoom/2)\':';
+        filterComplex += 'y=\'ih/2-(ih/zoom/2)\':';
+        filterComplex += `d=${Math.ceil((updatedSegments[i].timeEnd - updatedSegments[i].timeStart) * 30)}:`;
+        filterComplex += 's=1080x1920:fps=30,';
+        filterComplex += `trim=0:${updatedSegments[i].timeEnd - updatedSegments[i].timeStart},`;
+        filterComplex += 'setpts=PTS-STARTPTS';  // Reiniciar el tiempo para cada segmento
+        filterComplex += `[v${i}];`;
+      }
 
-      // Generar el filter complex
-      filterComplex = '[0:v]';
-      filterComplex += 'scale=1080:1920:force_original_aspect_ratio=increase,';
-      filterComplex += 'crop=1080:1920,';
-      filterComplex += 'zoompan=z=\'min(zoom+0.001,1.5)\':';
-      filterComplex += 'x=\'iw/2-(iw/zoom/2)\':';
-      filterComplex += 'y=\'ih/2-(ih/zoom/2)\':';
-      filterComplex += 'd=125:s=1080x1920:fps=30';
-      filterComplex += '[v]';
+      // Concatenar todos los segmentos
+      for (let i = 0; i < updatedSegments.length; i++) {
+        filterComplex += `[v${i}]`;
+      }
+      filterComplex += `concat=n=${updatedSegments.length}:v=1:a=0[v]`;
 
-      // Generar el video base con un solo efecto de zoom
+      // Construir los argumentos de entrada
+      const inputArgs = updatedSegments.map((segment, i) => [
+        '-loop', '1',
+        '-i', `image_${i}.jpg`  // Removemos -t aquí ya que lo manejamos con trim
+      ]).flat();
+
+      // Generar el video base
       await ffmpeg.exec([
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', 'image_list.txt',
+        ...inputArgs,
         '-filter_complex', filterComplex,
         '-map', '[v]',
         '-vsync', '1',
@@ -406,6 +415,7 @@ Return ONLY a JSON with this exact format:
         '-threads', '0',
         '-c:v', 'libx264',
         '-crf', '28',
+        '-t', currentTime.toString(),
         '-movflags', '+faststart',
         'input.mp4'
       ]);
@@ -509,7 +519,7 @@ Return ONLY a JSON with this exact format:
         '-ac', '2',
         '-ar', '44100',
         '-threads', '0',
-        '-t', updatedSegments[updatedSegments.length - 1].timeEnd.toString(),
+        '-t', currentTime.toString(), // Usar la duración total exacta
         '-shortest',
         '-async', '1',
         '-vsync', '1',
