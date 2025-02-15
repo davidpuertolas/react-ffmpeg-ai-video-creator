@@ -464,6 +464,8 @@ export default function VideoProcessor() {
         filterComplex += 'crop=540:960,';
         // Establecemos fps
         filterComplex += 'fps=10,';
+        // Aplicamos zoom lento
+        filterComplex += 'zoompan=z=\'min(zoom+0.0015,1.5)\':d=125:s=540x960:fps=10,';
         // Recortamos al tiempo exacto del segmento
         filterComplex += `trim=0:${updatedSegments[i].timeEnd - updatedSegments[i].timeStart},`;
         // Reiniciamos el timestamp para que empiece en 0
