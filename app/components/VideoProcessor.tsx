@@ -28,6 +28,33 @@ enum ProcessStep {
   COMPLETED = 'completed'
 }
 
+const subtitleStyles = [
+  {
+    name: 'Classic',
+    fontsize: 45,
+    fontcolor: 'white',
+    borderw: 7,
+    bordercolor: 'black',
+    shadowcolor: 'black@0.8',
+    shadowx: 3,
+    shadowy: 3,
+    y: '(h-text_h)/2', // Centrado vertical
+  },
+  {
+    name: 'TikTok Split',
+    fontsize: 50,
+    fontcolor: 'white',
+    borderw: 8,
+    bordercolor: 'black',
+    shadowcolor: 'black@0.9',
+    shadowx: 4,
+    shadowy: 4,
+    splitColors: true,
+    secondLineColor: 'yellow',
+    y: '(h-text_h)/2-30', // Centrado vertical, ajustado para las dos líneas
+  }
+];
+
 export default function VideoProcessor() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -42,12 +69,101 @@ export default function VideoProcessor() {
   const [currentStep, setCurrentStep] = useState<ProcessStep>(ProcessStep.INITIAL);
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
   const [finalVideoBlob, setFinalVideoBlob] = useState<Blob | null>(null);
+  const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+  const [ffmpegError, setFfmpegError] = useState<string | null>(null);
+  const [selectedStyle, setSelectedStyle] = useState(subtitleStyles[0]);
 
-  // Inicializar FFmpeg cuando el componente se monta
+  // Cargar la fuente globalmente
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      @font-face {
+        font-family: 'The Bold Font';
+        src: url('/fonts/theboldfontesp.ttf') format('truetype');
+        font-weight: normal;
+        font-style: normal;
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
+
+  // Subtitle Preview Component
+  const SubtitlePreview = () => {
+    const style = selectedStyle;
+    const previewText = style.splitColors ?
+      ['PRIMERA LÍNEA', 'SEGUNDA LÍNEA'] :
+      'Preview Subtitle';
+
+    const containerStyle = {
+      width: '100%',
+      height: '200px',
+      backgroundColor: '#333',
+      display: 'flex',
+      flexDirection: 'column' as const,
+      justifyContent: 'center',
+      alignItems: 'center',
+      borderRadius: '10px',
+      overflow: 'hidden',
+      position: 'relative' as const,
+    };
+
+    const textContainerStyle = {
+      position: 'relative' as const,
+      display: 'flex',
+      flexDirection: 'column' as const,
+      alignItems: 'center',
+      gap: '10px',
+    };
+
+    const getTextStyle = (color: string) => ({
+      fontSize: `${style.fontsize * 0.7}px`,
+      fontWeight: 'normal' as const,
+      textAlign: 'center' as const,
+      color: color,
+      WebkitTextStroke: `${style.borderw/2}px ${style.bordercolor}`,
+      textShadow: `
+        ${style.shadowx}px ${style.shadowy}px ${style.shadowcolor},
+        ${-style.shadowx}px ${style.shadowy}px ${style.shadowcolor},
+        ${style.shadowx}px ${-style.shadowy}px ${style.shadowcolor},
+        ${-style.shadowx}px ${-style.shadowy}px ${style.shadowcolor}
+      `,
+      fontFamily: 'The Bold Font, Arial, sans-serif',
+      letterSpacing: '1px',
+      position: 'relative' as const,
+    });
+
+    return (
+      <div style={containerStyle}>
+        <div style={textContainerStyle}>
+          {style.splitColors ? (
+            <>
+              <div style={getTextStyle('yellow')}>
+                {previewText[0]}
+              </div>
+              <div style={getTextStyle('white')}>
+                {previewText[1]}
+              </div>
+            </>
+          ) : (
+            <div style={getTextStyle(style.fontcolor)}>
+              {previewText}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // Modificar el useEffect de inicialización de FFmpeg
   useEffect(() => {
     const loadFFmpeg = async () => {
       try {
+        setMessage('Inicializando FFmpeg...');
         console.log('🎬 Iniciando carga de FFmpeg...');
+
         const ffmpegInstance = new FFmpeg();
         const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.4/dist/umd';
 
@@ -59,13 +175,23 @@ export default function VideoProcessor() {
 
         console.log('✅ FFmpeg cargado exitosamente');
         setFfmpeg(ffmpegInstance);
+        setFfmpegLoaded(true);
+        setMessage('FFmpeg inicializado correctamente');
       } catch (error) {
         console.error('❌ Error cargando FFmpeg:', error);
+        setFfmpegError(error.message || 'Error inicializando FFmpeg');
         setMessage('Error inicializando el procesador de video');
       }
     };
 
     loadFFmpeg();
+
+    // Cleanup function
+    return () => {
+      if (ffmpeg) {
+        ffmpeg.terminate();
+      }
+    };
   }, []);
 
   const generateStorySegments = async (prompt: string) => {
@@ -73,76 +199,23 @@ export default function VideoProcessor() {
       setLoading(true);
       setMessage('Generando historia...');
 
-      // Primero generamos la historia con GPT
-      const openai = new OpenAI({
-        apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
-        dangerouslyAllowBrowser: true
+      const response = await fetch('/api/tiktok-video/generate-story', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt }),
       });
 
-      const systemPrompt = `You are an expert storyteller and TIKTOK video script writer. Create a captivating 40/60-second story divided into segments.
-The story/video should be based on the following user prompt: "${prompt}".
-
-Key requirements:
-1. Story Structure:
-- Start with a powerful hook in the first seconds to grab attention
-- Build tension and intrigue throughout if needed, if the type of video is not a story, just create the best for it.
-- End with a satisfying or surprising conclusion
-
-2. Narration Guidelines:
-- Keep narration concise and natural to fit 10 seconds
-- Use engaging, conversational language
-- Create emotional connection through vivid descriptions
-- Maintain clear pacing and rhythm
-
-3. Visual Descriptions:
-- Format as SDXL prompts
-- Include key style elements: (cinematic, dramatic lighting, high detail, 8k uhd)
-- Specify camera angles and shot types
-- Add artistic direction (color palette, mood, atmosphere)
-- Focus on the main subject and important details
-- Make them so clickbaity, engaging and exagerated as possible.
-- Imagine that each image is a tiktok video thumbnail, cant be a plain image of a field if talking about the area51, must be a big eye catching alien or something related to the story. (this is an example, but you get the point)
-
-Example Visual Description Format:
-"close-up shot of [subject], [specific details], [lighting], [style elements], [atmosphere], cinematic, dramatic lighting, high detail, 8k uhd"
-
-Return ONLY a JSON with this exact format:
-{
-  "segments": [
-    {
-      "timeStart": 0,
-      "timeEnd": X,
-      "narration": "engaging narration text",
-      "visualDescription": "SDXL-optimized visual description"
-    }
-  ]
-}`;
-
-      const completion = await openai.chat.completions.create({
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
-        model: "gpt-4o-mini",
-        response_format: { type: "json_object" },
-        temperature: 1,
-      });
-
-      const response = JSON.parse(completion.choices[0].message.content);
-      console.log(response);
-      if (!response.segments || !Array.isArray(response.segments)) {
+      const story = await response.json();
+      console.log(story);
+      if (!story.segments || !Array.isArray(story.segments)) {
         throw new Error('Formato de respuesta inválido');
       }
 
       // Ahora generamos las imágenes para cada segmento en paralelo
       setMessage('Generando imágenes para la historia...');
-      const segmentsWithImages = [...response.segments];
+      const segmentsWithImages = [...story.segments];
 
       try {
         const imagePromises = segmentsWithImages.map((segment, index) => {
@@ -178,19 +251,16 @@ Return ONLY a JSON with this exact format:
   };
 
   const generateAudioForSegment = async (text: string, index: number) => {
-    const openai = new OpenAI({
-      apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
-      dangerouslyAllowBrowser: true
-    });
-
     try {
-      const mp3 = await openai.audio.speech.create({
-        model: "tts-1",
-        voice: "alloy",
-        input: text,
+      const response = await fetch('/api/tiktok-video/generate-speech', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text }),
       });
 
-      const blob = new Blob([await mp3.arrayBuffer()], { type: 'audio/mpeg' });
+      const blob = new Blob([await response.arrayBuffer()], { type: 'audio/mpeg' });
       return blob;
     } catch (error) {
       console.error(`Error generating audio for segment ${index}:`, error);
@@ -213,20 +283,23 @@ Return ONLY a JSON with this exact format:
       if (!segment.subSegments) {
         const sentences = segment.narration.split('.').filter(s => s.trim());
         const subSegments: SubSegment[] = [];
-
         const segmentDuration = segment.timeEnd - segment.timeStart;
-        const durationPerSentence = segmentDuration / sentences.length;
 
-        sentences.forEach((sentence, sentenceIndex) => {
+        // Calcular el total de caracteres en todas las frases
+        const totalChars = sentences.reduce((sum, sentence) => sum + sentence.trim().length, 0);
+        let currentTime = segment.timeStart;
+
+        sentences.forEach((sentence) => {
           const words = sentence.trim().split(' ');
           const wordsPerSubSegment = 3;
-          const durationPerWord = durationPerSentence / words.length;
+
+          // Calcular la duración proporcional basada en la longitud de la frase
+          const sentenceDuration = (sentence.length / totalChars) * segmentDuration;
+          const durationPerWord = sentenceDuration / words.length;
 
           for (let i = 0; i < words.length; i += wordsPerSubSegment) {
             const subSegmentWords = words.slice(i, i + wordsPerSubSegment);
-            const timeStart = segment.timeStart +
-                            (sentenceIndex * durationPerSentence) +
-                            (i * durationPerWord);
+            const timeStart = currentTime;
             const timeEnd = timeStart + (subSegmentWords.length * durationPerWord);
 
             if (subSegmentWords.length > 0) {
@@ -236,6 +309,7 @@ Return ONLY a JSON with this exact format:
                 text: normalizeText(subSegmentWords.join(' '))
               });
             }
+            currentTime = timeEnd;
           }
         });
 
@@ -292,6 +366,11 @@ Return ONLY a JSON with this exact format:
   };
 
   const generateFinalVideo = async () => {
+    if (!ffmpeg || !ffmpegLoaded) {
+      setMessage('Error: FFmpeg no está inicializado. Por favor, recarga la página.');
+      throw new Error('FFmpeg no está inicializado');
+    }
+
     try {
       setLoading(true);
       setCurrentStep(ProcessStep.GENERATING);
@@ -376,17 +455,20 @@ Return ONLY a JSON with this exact format:
 
       // Construir el filter complex para cada segmento
       for (let i = 0; i < updatedSegments.length; i++) {
-        // Cada imagen tendrá su propio input con loop y trim
+        // Iteramos por cada segmento para construir su filtro
+        // Definimos el input stream para esta imagen
         filterComplex += `[${i}:v]`;
-        filterComplex += 'scale=1080:1920:force_original_aspect_ratio=increase,';
-        filterComplex += 'crop=1080:1920,';
-        filterComplex += 'zoompan=z=\'min(zoom+0.001,1.5)\':';
-        filterComplex += 'x=\'iw/2-(iw/zoom/2)\':';
-        filterComplex += 'y=\'ih/2-(ih/zoom/2)\':';
-        filterComplex += `d=${Math.ceil((updatedSegments[i].timeEnd - updatedSegments[i].timeStart) * 30)}:`;
-        filterComplex += 's=1080x1920:fps=30,';
+        // Escalamos la imagen a 540x960 manteniendo aspect ratio
+        filterComplex += 'scale=540:960:force_original_aspect_ratio=increase,';
+        // Recortamos la imagen al tamaño exacto deseado
+        filterComplex += 'crop=540:960,';
+        // Establecemos fps
+        filterComplex += 'fps=10,';
+        // Recortamos al tiempo exacto del segmento
         filterComplex += `trim=0:${updatedSegments[i].timeEnd - updatedSegments[i].timeStart},`;
-        filterComplex += 'setpts=PTS-STARTPTS';  // Reiniciar el tiempo para cada segmento
+        // Reiniciamos el timestamp para que empiece en 0
+        filterComplex += 'setpts=PTS-STARTPTS';
+        // Nombramos el output stream para este segmento
         filterComplex += `[v${i}];`;
       }
 
@@ -409,7 +491,7 @@ Return ONLY a JSON with this exact format:
         '-map', '[v]',
         '-vsync', '1',
         '-pix_fmt', 'yuv420p',
-        '-r', '30',
+        '-r', '10',
         '-preset', 'ultrafast',
         '-tune', 'fastdecode',
         '-threads', '0',
@@ -478,19 +560,7 @@ Return ONLY a JSON with this exact format:
             .replace(/\[/g, "\\[") // Escapar corchetes
             .replace(/\]/g, "\\]"); // Escapar corchetes
 
-          return `drawtext=fontfile=theboldfontesp.ttf:` +
-                 `text='${escapedText}':`+
-                 `fontsize=80:` +
-                 `fontcolor=white:` +
-                 `borderw=8:` +
-                 `bordercolor=black:` +
-                 `shadowcolor=black@0.8:` +
-                 `shadowx=3:` +
-                 `shadowy=3:` +
-                 `x=(w-text_w)/2:` +
-                 `y=(h-text_h)/2:` +
-                 `enable='between(t,${subSegment.timeStart},${subSegment.timeEnd})':` +
-                 `alpha='if(lt(t,${subSegment.timeStart}+0.05),t-${subSegment.timeStart},1)'`;
+          return generateTextFilter(escapedText, selectedStyle, subSegment.timeStart, subSegment.timeEnd);
         }) || []
       ).join(',');
 
@@ -509,7 +579,7 @@ Return ONLY a JSON with this exact format:
         '-i', 'output.mp3',
         '-vf', finalFilter,
         '-c:v', 'libx264',
-        '-r', '30',
+        '-r', '10',
         '-map', '0:v:0',
         '-map', '1:a:0',
         '-preset', 'ultrafast',
@@ -661,7 +731,7 @@ Return ONLY a JSON with this exact format:
 
   const generateImageForSegment = async (visualDescription: string): Promise<string> => {
     try {
-      const response = await fetch('/api/generate-image', {
+      const response = await fetch('/api/tiktok-video/generate-image', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -679,6 +749,112 @@ Return ONLY a JSON with this exact format:
       console.error('Error generating image:', error);
       throw error;
     }
+  };
+
+  const renderGenerateVideoButton = () => {
+    if (!ffmpegLoaded) {
+      return (
+        <button
+          disabled
+          className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gray-400 cursor-not-allowed"
+        >
+          Inicializando FFmpeg...
+        </button>
+      );
+    }
+
+    if (ffmpegError) {
+      return (
+        <div className="text-red-600 text-sm mb-2">
+          Error: {ffmpegError}
+          <button
+            onClick={() => window.location.reload()}
+            className="w-full mt-2 py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700"
+          >
+            Reintentar
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <button
+        onClick={generateFinalVideo}
+        disabled={loading}
+        className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
+      >
+        Generar Video
+      </button>
+    );
+  };
+
+  const generateTextFilter = (text: string, style: typeof subtitleStyles[0], timeStart: number, timeEnd: number) => {
+    const fadeInDuration = 0.2; // Duración del fade in en segundos
+
+    if (style.splitColors) {
+      // Dividir el texto en dos líneas
+      const lines = text.split(' ');
+      const midpoint = Math.ceil(lines.length / 2);
+      const line1 = lines.slice(0, midpoint).join(' ');
+      const line2 = lines.slice(midpoint).join(' ');
+
+      const duration = timeEnd - timeStart;
+      const midTime = timeStart + (duration / 2);
+
+      // Función helper para generar la expresión alpha con fade in
+      const getAlpha = (t: string) =>
+        `alpha='if(lt(${t}-${timeStart},${fadeInDuration}),` +
+        `(${t}-${timeStart})/${fadeInDuration},1)'`;
+
+      return [
+        // Primera mitad del tiempo - línea 1 amarilla, línea 2 blanca
+        `drawtext=fontfile=theboldfontesp.ttf:` +
+        `text='${line1}':fontsize=${style.fontsize}:` +
+        `fontcolor=yellow:${getAlpha('t')}:borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}:shadowcolor=${style.shadowcolor}:` +
+        `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
+        `x=(w-text_w)/2:y=(h-text_h)/2-30:` +
+        `enable='between(t,${timeStart},${midTime})'`,
+
+        `drawtext=fontfile=theboldfontesp.ttf:` +
+        `text='${line2}':fontsize=${style.fontsize}:` +
+        `fontcolor=white:${getAlpha('t')}:borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}:shadowcolor=${style.shadowcolor}:` +
+        `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
+        `x=(w-text_w)/2:y=(h-text_h)/2+30:` +
+        `enable='between(t,${timeStart},${midTime})'`,
+
+        // Segunda mitad del tiempo - línea 1 blanca, línea 2 amarilla
+        `drawtext=fontfile=theboldfontesp.ttf:` +
+        `text='${line1}':fontsize=${style.fontsize}:` +
+        `fontcolor=white:${getAlpha('t')}:borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}:shadowcolor=${style.shadowcolor}:` +
+        `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
+        `x=(w-text_w)/2:y=(h-text_h)/2-30:` +
+        `enable='between(t,${midTime},${timeEnd})'`,
+
+        `drawtext=fontfile=theboldfontesp.ttf:` +
+        `text='${line2}':fontsize=${style.fontsize}:` +
+        `fontcolor=yellow:${getAlpha('t')}:borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}:shadowcolor=${style.shadowcolor}:` +
+        `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
+        `x=(w-text_w)/2:y=(h-text_h)/2+30:` +
+        `enable='between(t,${midTime},${timeEnd})'`
+      ].join(',');
+    }
+
+    // Estilo normal con fade in
+    return `drawtext=fontfile=theboldfontesp.ttf:` +
+           `text='${text}':fontsize=${style.fontsize}:` +
+           `fontcolor=${style.fontcolor}:` +
+           `alpha='if(lt(t-${timeStart},${fadeInDuration}),` +
+           `(t-${timeStart})/${fadeInDuration},1)':` +
+           `borderw=${style.borderw}:` +
+           `bordercolor=${style.bordercolor}:` +
+           `shadowcolor=${style.shadowcolor}:` +
+           `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
+           `x=(w-text_w)/2:y=${style.y}:` +
+           `enable='between(t,${timeStart},${timeEnd})'`;
   };
 
   return (
@@ -705,6 +881,33 @@ Return ONLY a JSON with this exact format:
           currentStep={currentStep}
           title="Video Listo"
         />
+      </div>
+
+      {/* Subtitle Style Selection */}
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Select Subtitle Style
+        </label>
+        <select
+          value={selectedStyle.name}
+          onChange={(e) => {
+            const style = subtitleStyles.find(s => s.name === e.target.value);
+            if (style) setSelectedStyle(style);
+          }}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {subtitleStyles.map(style => (
+            <option key={style.name} value={style.name}>
+              {style.name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Subtitle Preview */}
+      <div className="mb-4">
+        <h3 className="text-sm font-medium text-gray-700 mb-2">Subtitle Preview</h3>
+        <SubtitlePreview />
       </div>
 
       {/* Step Content */}
@@ -783,13 +986,9 @@ Return ONLY a JSON with this exact format:
             </div>
 
             {currentStep === ProcessStep.STORY_GENERATED && (
-              <button
-                onClick={generateFinalVideo}
-                disabled={loading}
-                className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
-              >
-                Generar Video
-              </button>
+              <div className="space-y-6">
+                {renderGenerateVideoButton()}
+              </div>
             )}
           </div>
         )}

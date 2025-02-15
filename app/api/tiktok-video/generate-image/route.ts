@@ -14,7 +14,7 @@ export async function POST(request: Request) {
 
     const model = new TextToImage(
       "stabilityai/sdxl-turbo",
-      process.env.NEXT_PUBLIC_DEEPINFRA_API_KEY
+      process.env.DEEPINFRA_API_KEY
     );
 
     const response = await model.generate({ prompt });
