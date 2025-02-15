@@ -283,7 +283,7 @@ export default function VideoProcessor() {
       if (!segment.subSegments) {
         const sentences = segment.narration.split('.').filter(s => s.trim());
         const subSegments: SubSegment[] = [];
-        const segmentDuration = segment.timeEnd - segment.timeStart;
+        const segmentDuration = (segment.timeEnd - segment.timeStart) - 0.3;
 
         // Calcular el total de caracteres en todas las frases
         const totalChars = sentences.reduce((sum, sentence) => sum + sentence.trim().length, 0);
@@ -579,11 +579,11 @@ export default function VideoProcessor() {
       const ffmpegArgs = [
         '-i', 'input.mp4',
         '-i', 'output.mp3',
-        '-vf', finalFilter,
+        '-filter_complex', `[0:v]${finalFilter}[v]`,  // Envolver el filtro en un stream
+        '-map', '[v]',  // Usar el stream de video filtrado
+        '-map', '1:a:0',
         '-c:v', 'libx264',
         '-r', '10',
-        '-map', '0:v:0',
-        '-map', '1:a:0',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-c:a', 'aac',
@@ -591,7 +591,7 @@ export default function VideoProcessor() {
         '-ac', '2',
         '-ar', '44100',
         '-threads', '0',
-        '-t', currentTime.toString(), // Usar la duración total exacta
+        '-t', currentTime.toString(),
         '-shortest',
         '-async', '1',
         '-vsync', '1',
@@ -791,72 +791,78 @@ export default function VideoProcessor() {
   };
 
   const generateTextFilter = (text: string, style: typeof subtitleStyles[0], timeStart: number, timeEnd: number) => {
-    const fadeInDuration = 0.2; // Duración del fade in en segundos
+    const fadeInDuration = 0.2;
+
+    // Escapar caracteres especiales de manera más robusta
+    const escapeText = (text: string) => {
+      return text
+        .replace(/[\\]/g, '\\\\')      // Escapar backslashes primero
+        .replace(/[']/g, "\\\\'")      // Escapar comillas simples
+        .replace(/[:]/g, '\\\\:')      // Escapar dos puntos
+        .replace(/[\[]/g, '\\\\[')     // Escapar corchetes
+        .replace(/[\]]/g, '\\\\]');    // Escapar corchetes
+    };
 
     if (style.splitColors) {
-      // Dividir el texto en dos líneas
       const lines = text.split(' ');
       const midpoint = Math.ceil(lines.length / 2);
-      const line1 = lines.slice(0, midpoint).join(' ');
-      const line2 = lines.slice(midpoint).join(' ');
-
+      const line1 = escapeText(lines.slice(0, midpoint).join(' '));
+      const line2 = escapeText(lines.slice(midpoint).join(' '));
       const duration = timeEnd - timeStart;
       const midTime = timeStart + (duration / 2);
 
-      // Función helper para generar la expresión alpha con fade in
       const getAlpha = (t: string) =>
-        `alpha='if(lt(${t}-${timeStart},${fadeInDuration}),` +
-        `(${t}-${timeStart})/${fadeInDuration},1)'`;
+        `if(lt(${t}-${timeStart},${fadeInDuration}),` +
+        `(${t}-${timeStart})/${fadeInDuration},1)`;
 
       return [
-        // Primera mitad del tiempo - línea 1 amarilla, línea 2 blanca
-        `drawtext=fontfile=theboldfontesp.ttf:` +
-        `text='${line1}':fontsize=${style.fontsize}:` +
-        `fontcolor=yellow:${getAlpha('t')}:borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}:shadowcolor=${style.shadowcolor}:` +
-        `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
-        `x=(w-text_w)/2:y=(h-text_h)/2-30:` +
-        `enable='between(t,${timeStart},${midTime})'`,
+        // Primera línea (primera mitad)
+        `drawtext=enable='between(t,${timeStart},${midTime})':` +
+        `fontfile=theboldfontesp.ttf:text='${line1}':` +
+        `fontsize=${style.fontsize}:fontcolor=yellow@1:` +
+        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}@1:` +
+        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2-30`,
 
-        `drawtext=fontfile=theboldfontesp.ttf:` +
-        `text='${line2}':fontsize=${style.fontsize}:` +
-        `fontcolor=white:${getAlpha('t')}:borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}:shadowcolor=${style.shadowcolor}:` +
-        `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
-        `x=(w-text_w)/2:y=(h-text_h)/2+30:` +
-        `enable='between(t,${timeStart},${midTime})'`,
+        // Segunda línea (primera mitad)
+        `drawtext=enable='between(t,${timeStart},${midTime})':` +
+        `fontfile=theboldfontesp.ttf:text='${line2}':` +
+        `fontsize=${style.fontsize}:fontcolor=white@1:` +
+        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}@1:` +
+        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2+30`,
 
-        // Segunda mitad del tiempo - línea 1 blanca, línea 2 amarilla
-        `drawtext=fontfile=theboldfontesp.ttf:` +
-        `text='${line1}':fontsize=${style.fontsize}:` +
-        `fontcolor=white:${getAlpha('t')}:borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}:shadowcolor=${style.shadowcolor}:` +
-        `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
-        `x=(w-text_w)/2:y=(h-text_h)/2-30:` +
-        `enable='between(t,${midTime},${timeEnd})'`,
+        // Primera línea (segunda mitad)
+        `drawtext=enable='between(t,${midTime},${timeEnd})':` +
+        `fontfile=theboldfontesp.ttf:text='${line1}':` +
+        `fontsize=${style.fontsize}:fontcolor=white@1:` +
+        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}@1:` +
+        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2-30`,
 
-        `drawtext=fontfile=theboldfontesp.ttf:` +
-        `text='${line2}':fontsize=${style.fontsize}:` +
-        `fontcolor=yellow:${getAlpha('t')}:borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}:shadowcolor=${style.shadowcolor}:` +
-        `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
-        `x=(w-text_w)/2:y=(h-text_h)/2+30:` +
-        `enable='between(t,${midTime},${timeEnd})'`
+        // Segunda línea (segunda mitad)
+        `drawtext=enable='between(t,${midTime},${timeEnd})':` +
+        `fontfile=theboldfontesp.ttf:text='${line2}':` +
+        `fontsize=${style.fontsize}:fontcolor=yellow@1:` +
+        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}@1:` +
+        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2+30`
       ].join(',');
     }
 
     // Estilo normal con fade in
-    return `drawtext=fontfile=theboldfontesp.ttf:` +
-           `text='${text}':fontsize=${style.fontsize}:` +
-           `fontcolor=${style.fontcolor}:` +
+    return `drawtext=enable='between(t,${timeStart},${timeEnd})':` +
+           `fontfile=theboldfontesp.ttf:text='${escapeText(text)}':` +
+           `fontsize=${style.fontsize}:fontcolor=${style.fontcolor}@1:` +
            `alpha='if(lt(t-${timeStart},${fadeInDuration}),` +
-           `(t-${timeStart})/${fadeInDuration},1)':` +
-           `borderw=${style.borderw}:` +
-           `bordercolor=${style.bordercolor}:` +
-           `shadowcolor=${style.shadowcolor}:` +
-           `shadowx=${style.shadowx}:shadowy=${style.shadowy}:` +
-           `x=(w-text_w)/2:y=${style.y}:` +
-           `enable='between(t,${timeStart},${timeEnd})'`;
+           `(t-${timeStart})/${fadeInDuration},1)':borderw=${style.borderw}:` +
+           `bordercolor=${style.bordercolor}@1:` +
+           `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+           `shadowy=${style.shadowy}:x=(w-text_w)/2:y=${style.y}`;
   };
 
   return (
