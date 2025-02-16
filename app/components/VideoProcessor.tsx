@@ -197,6 +197,22 @@ export default function VideoProcessor() {
   const generateStorySegments = async (prompt: string) => {
     try {
       setLoading(true);
+      setProgress(0);
+
+      // Iniciar la animación de progreso
+      const startTime = Date.now();
+      const duration = 25000; // 25 segundos
+
+      const progressInterval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const currentProgress = Math.min((elapsed / duration) * 95, 95);
+        setProgress(currentProgress);
+
+        if (elapsed >= duration) {
+          clearInterval(progressInterval);
+        }
+      }, 100);
+
       setMessage('Generando historia...');
 
       const response = await fetch('/api/tiktok-video/generate-story', {
@@ -223,11 +239,14 @@ export default function VideoProcessor() {
           return generateImageForSegment(segment.visualDescription)
             .catch(error => {
               console.error(`Error generando imagen ${index + 1}:`, error);
-              return null; // Retornamos null si falla la generación
+              return null;
             });
         });
 
         const imageUrls = await Promise.all(imagePromises);
+
+        // Limpiar el intervalo cuando se complete
+        clearInterval(progressInterval);
 
         // Actualizamos los segmentos con las URLs de las imágenes
         segmentsWithImages.forEach((segment, index) => {
@@ -237,8 +256,10 @@ export default function VideoProcessor() {
         setSegments(segmentsWithImages);
         setCurrentStep(ProcessStep.STORY_GENERATED);
         setMessage('Historia e imágenes generadas con éxito!');
+        setProgress(100);
         return segmentsWithImages;
       } catch (error) {
+        clearInterval(progressInterval);
         console.error('Error generando imágenes:', error);
         throw new Error('Error al generar las imágenes: ' + (error.message || 'Error desconocido'));
       }
@@ -865,6 +886,34 @@ export default function VideoProcessor() {
            `shadowy=${style.shadowy}:x=(w-text_w)/2:y=${style.y}`;
   };
 
+  // Modificar el botón de generar historia para incluir la barra de progreso
+  const renderGenerateStoryButton = () => (
+    <div className="space-y-4">
+      <button
+        onClick={() => generateStorySegments(storyPrompt)}
+        disabled={loading || !storyPrompt}
+        className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
+      >
+        Generar Historia
+      </button>
+
+      {loading && (
+        <div className="space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">{message}</span>
+            <span className="text-sm font-medium text-blue-600">{Math.round(progress)}%</span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2.5">
+            <div
+              className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            ></div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-8">
       {/* Steps Indicator */}
@@ -935,13 +984,7 @@ export default function VideoProcessor() {
                 placeholder="Por ejemplo: Una historia sobre un gato que descubre que puede volar..."
               />
             </div>
-            <button
-              onClick={() => generateStorySegments(storyPrompt)}
-              disabled={loading || !storyPrompt}
-              className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
-            >
-              Generar Historia
-            </button>
+            {renderGenerateStoryButton()}
           </div>
         )}
 
