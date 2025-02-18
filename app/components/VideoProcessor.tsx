@@ -33,7 +33,7 @@ const subtitleStyles = [
     name: 'Classic',
     fontsize: 45,
     fontcolor: 'white',
-    borderw: 7,
+    borderw: 6,
     bordercolor: 'black',
     shadowcolor: 'black@0.8',
     shadowx: 3,
@@ -44,7 +44,7 @@ const subtitleStyles = [
     name: 'TikTok Split',
     fontsize: 50,
     fontcolor: 'white',
-    borderw: 8,
+    borderw: 6,
     bordercolor: 'black',
     shadowcolor: 'black@0.9',
     shadowx: 4,
@@ -72,6 +72,10 @@ export default function VideoProcessor() {
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const [ffmpegError, setFfmpegError] = useState<string | null>(null);
   const [selectedStyle, setSelectedStyle] = useState(subtitleStyles[0]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedSegmentIndex, setSelectedSegmentIndex] = useState<number | null>(null);
+  const [customImagePrompt, setCustomImagePrompt] = useState('');
+  const [isRegenerating, setIsRegenerating] = useState(false);
 
   // Cargar la fuente globalmente
   useEffect(() => {
@@ -79,7 +83,7 @@ export default function VideoProcessor() {
     style.textContent = `
       @font-face {
         font-family: 'The Bold Font';
-        src: url('/fonts/theboldfontesp.ttf') format('truetype');
+        src: url('/fonts/mrbeast.ttf') format('truetype');
         font-weight: normal;
         font-style: normal;
       }
@@ -487,6 +491,12 @@ export default function VideoProcessor() {
         filterComplex += 'fps=10,';
         // Aplicamos zoom lento
         filterComplex += 'zoompan=z=\'min(zoom+0.0015,1.5)\':d=125:s=540x960:fps=10,';
+
+        // Agregamos fade in solo para el primer segmento
+        if (i === 0) {
+          filterComplex += 'fade=in:st=0:d=1.5,'; // Fade in de 1.5 segundos
+        }
+
         // Recortamos al tiempo exacto del segmento
         filterComplex += `trim=0:${updatedSegments[i].timeEnd - updatedSegments[i].timeStart},`;
         // Reiniciamos el timestamp para que empiece en 0
@@ -535,9 +545,9 @@ export default function VideoProcessor() {
 
       // Cargar la fuente ANTES de preparar los filtros de texto
       console.log('🎨 Cargando fuente...');
-      const fontResponse = await fetch('/fonts/theboldfontesp.ttf');
+      const fontResponse = await fetch('/fonts/mrbeast.ttf');
       const fontData = await fontResponse.arrayBuffer();
-      await ffmpeg.writeFile('theboldfontesp.ttf', new Uint8Array(fontData));
+      await ffmpeg.writeFile('mrbeast.ttf', new Uint8Array(fontData));
       console.log('✅ Fuente cargada');
 
       // Step 5: Process audio files
@@ -839,7 +849,7 @@ export default function VideoProcessor() {
       return [
         // Primera línea (primera mitad)
         `drawtext=enable='between(t,${timeStart},${midTime})':` +
-        `fontfile=theboldfontesp.ttf:text='${line1}':` +
+        `fontfile=mrbeast.ttf:text='${line1}':` +
         `fontsize=${style.fontsize}:fontcolor=yellow@1:` +
         `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
         `bordercolor=${style.bordercolor}@1:` +
@@ -848,7 +858,7 @@ export default function VideoProcessor() {
 
         // Segunda línea (primera mitad)
         `drawtext=enable='between(t,${timeStart},${midTime})':` +
-        `fontfile=theboldfontesp.ttf:text='${line2}':` +
+        `fontfile=mrbeast.ttf:text='${line2}':` +
         `fontsize=${style.fontsize}:fontcolor=white@1:` +
         `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
         `bordercolor=${style.bordercolor}@1:` +
@@ -857,7 +867,7 @@ export default function VideoProcessor() {
 
         // Primera línea (segunda mitad)
         `drawtext=enable='between(t,${midTime},${timeEnd})':` +
-        `fontfile=theboldfontesp.ttf:text='${line1}':` +
+        `fontfile=mrbeast.ttf:text='${line1}':` +
         `fontsize=${style.fontsize}:fontcolor=white@1:` +
         `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
         `bordercolor=${style.bordercolor}@1:` +
@@ -866,7 +876,7 @@ export default function VideoProcessor() {
 
         // Segunda línea (segunda mitad)
         `drawtext=enable='between(t,${midTime},${timeEnd})':` +
-        `fontfile=theboldfontesp.ttf:text='${line2}':` +
+        `fontfile=mrbeast.ttf:text='${line2}':` +
         `fontsize=${style.fontsize}:fontcolor=yellow@1:` +
         `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
         `bordercolor=${style.bordercolor}@1:` +
@@ -877,7 +887,7 @@ export default function VideoProcessor() {
 
     // Estilo normal con fade in
     return `drawtext=enable='between(t,${timeStart},${timeEnd})':` +
-           `fontfile=theboldfontesp.ttf:text='${escapeText(text)}':` +
+           `fontfile=mrbeast.ttf:text='${escapeText(text)}':` +
            `fontsize=${style.fontsize}:fontcolor=${style.fontcolor}@1:` +
            `alpha='if(lt(t-${timeStart},${fadeInDuration}),` +
            `(t-${timeStart})/${fadeInDuration},1)':borderw=${style.borderw}:` +
@@ -913,6 +923,58 @@ export default function VideoProcessor() {
       )}
     </div>
   );
+
+  const handleEditImage = (index: number) => {
+    setSelectedSegmentIndex(index);
+    setCustomImagePrompt(segments[index].visualDescription);
+    setIsModalOpen(true);
+  };
+
+  const handleRegenerateImage = async () => {
+    if (selectedSegmentIndex === null) return;
+
+    try {
+      setIsRegenerating(true);
+      const newImageUrl = await generateImageForSegment(customImagePrompt);
+
+      if (newImageUrl) {
+        const updatedSegments = [...segments];
+        updatedSegments[selectedSegmentIndex] = {
+          ...updatedSegments[selectedSegmentIndex],
+          imageUrl: newImageUrl,
+          visualDescription: customImagePrompt
+        };
+        setSegments(updatedSegments);
+      }
+      setIsModalOpen(false);
+    } catch (error) {
+      console.error('Error regenerando imagen:', error);
+      setMessage('Error al regenerar la imagen');
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || selectedSegmentIndex === null) return;
+
+    try {
+      // Crear una URL temporal para la imagen seleccionada
+      const imageUrl = URL.createObjectURL(file);
+
+      const updatedSegments = [...segments];
+      updatedSegments[selectedSegmentIndex] = {
+        ...updatedSegments[selectedSegmentIndex],
+        imageUrl: imageUrl
+      };
+      setSegments(updatedSegments);
+      setIsModalOpen(false);
+    } catch (error) {
+      console.error('Error cargando imagen:', error);
+      setMessage('Error al cargar la imagen');
+    }
+  };
 
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-8">
@@ -994,19 +1056,29 @@ export default function VideoProcessor() {
             <div className="space-y-4">
               {segments.map((segment, index) => (
                 <div key={index} className="flex gap-4">
-                  {/* Imagen generada */}
-                  <div className="w-48 h-48 flex-shrink-0 bg-gray-200 rounded-lg overflow-hidden">
-                    {segment.imageUrl ? (
-                      <img
-                        src={segment.imageUrl}
-                        alt={`Imagen para segmento ${index + 1}`}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-600"></div>
-                      </div>
-                    )}
+                  {/* Contenedor de imagen con botón de edición */}
+                  <div className="relative w-48 h-48 flex-shrink-0">
+                    <div className="w-full h-full bg-gray-200 rounded-lg overflow-hidden">
+                      {segment.imageUrl ? (
+                        <img
+                          src={segment.imageUrl}
+                          alt={`Imagen para segmento ${index + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-600"></div>
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => handleEditImage(index)}
+                      className="absolute top-2 right-2 p-2 bg-white rounded-full shadow-lg hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                      </svg>
+                    </button>
                   </div>
 
                   {/* Contenido del segmento */}
@@ -1149,7 +1221,65 @@ export default function VideoProcessor() {
         )}
       </div>
 
+      {/* Modal para editar imagen */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-lg w-full mx-4">
+            <h3 className="text-lg font-medium text-gray-900 mb-4">
+              Editar Imagen del Segmento {selectedSegmentIndex !== null ? selectedSegmentIndex + 1 : ''}
+            </h3>
 
+            <div className="space-y-4">
+              {/* Prompt para regenerar imagen */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Descripción para generar nueva imagen
+                </label>
+                <textarea
+                  value={customImagePrompt}
+                  onChange={(e) => setCustomImagePrompt(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  rows={3}
+                />
+              </div>
+
+              {/* Botones de acción */}
+              <div className="space-y-3">
+                <button
+                  onClick={handleRegenerateImage}
+                  disabled={isRegenerating || !customImagePrompt}
+                  className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  {isRegenerating ? 'Regenerando...' : 'Regenerar con IA'}
+                </button>
+
+                <div className="relative">
+                  <input
+                    type="file"
+                    onChange={handleFileUpload}
+                    accept="image/*"
+                    className="hidden"
+                    id="image-upload"
+                  />
+                  <label
+                    htmlFor="image-upload"
+                    className="w-full py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 cursor-pointer flex items-center justify-center"
+                  >
+                    Subir imagen del equipo
+                  </label>
+                </div>
+
+                <button
+                  onClick={() => setIsModalOpen(false)}
+                  className="w-full py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
