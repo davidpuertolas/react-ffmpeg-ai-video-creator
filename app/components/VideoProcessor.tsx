@@ -941,61 +941,79 @@ export default function VideoProcessor() {
     );
   };
 
-  const generateTextFilter = (
-    text: string,
-    style: typeof subtitleStyles[0],
-    startTime: number,
-    endTime: number
-  ): string => {
+  const generateTextFilter = (text: string, style: typeof subtitleStyles[0], timeStart: number, timeEnd: number) => {
     const fadeInDuration = 0.2;
-    const fadeInFilter = `if(lt(t-${startTime},${fadeInDuration}),1*((t-${startTime})/${fadeInDuration}),1)`;
 
-    if (style.splitColors && text.includes(' ')) {
-      // Dividir el texto en dos líneas
-      const [firstLine, ...rest] = text.split(' ');
-      const secondLine = rest.join(' ');
+    // Escapar caracteres especiales de manera más robusta
+    const escapeText = (text: string) => {
+      return text
+        .replace(/[\\]/g, '\\\\')      // Escapar backslashes primero
+        .replace(/[']/g, "\\\\'")      // Escapar comillas simples
+        .replace(/[:]/g, '\\\\:')      // Escapar dos puntos
+        .replace(/[\[]/g, '\\\\[')     // Escapar corchetes
+        .replace(/[\]]/g, '\\\\]');    // Escapar corchetes
+    };
 
-      return `drawtext=enable='between(t,${startTime},${endTime})':` +
-        `fontfile=mrbeast.ttf:` +
-        `text='${firstLine}':` +
-        `fontsize=${style.fontsize}:` +
-        `fontcolor=${style.fontcolor}:` +
-        `alpha='${fadeInFilter}':` +
-        `borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}:` +
-        `shadowcolor=${style.shadowcolor}:` +
-        `shadowx=${style.shadowx}:` +
-        `shadowy=${style.shadowy}:` +
-        `x=(w-text_w)/2:` +
-        `y=${style.y},` +
-        `drawtext=enable='between(t,${startTime},${endTime})':` +
-        `fontfile=mrbeast.ttf:` +
-        `text='${secondLine}':` +
-        `fontsize=${style.fontsize}:` +
-        `fontcolor=${style.secondLineColor}:` +
-        `alpha='${fadeInFilter}':` +
-        `borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}:` +
-        `shadowcolor=${style.shadowcolor}:` +
-        `shadowx=${style.shadowx}:` +
-        `shadowy=${style.shadowy}:` +
-        `x=(w-text_w)/2:` +
-        `y=(h-text_h)/2+30`;
-    } else {
-      return `drawtext=enable='between(t,${startTime},${endTime})':` +
-        `fontfile=mrbeast.ttf:` +
-        `text='${text}':` +
-        `fontsize=${style.fontsize}:` +
-        `fontcolor=${style.fontcolor}:` +
-        `alpha='${fadeInFilter}':` +
-        `borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}:` +
-        `shadowcolor=${style.shadowcolor}:` +
-        `shadowx=${style.shadowx}:` +
-        `shadowy=${style.shadowy}:` +
-        `x=(w-text_w)/2:` +
-        `y=${style.y}`;
+    if (style.splitColors) {
+      const lines = text.split(' ');
+      const midpoint = Math.ceil(lines.length / 2);
+      const line1 = escapeText(lines.slice(0, midpoint).join(' '));
+      const line2 = escapeText(lines.slice(midpoint).join(' '));
+      const duration = timeEnd - timeStart;
+      const midTime = timeStart + (duration / 2);
+
+      const getAlpha = (t: string) =>
+        `if(lt(${t}-${timeStart},${fadeInDuration}),` +
+        `(${t}-${timeStart})/${fadeInDuration},1)`;
+
+      return [
+        // Primera línea (primera mitad)
+        `drawtext=enable='between(t,${timeStart},${midTime})':` +
+        `fontfile=mrbeast.ttf:text='${line1}':` +
+        `fontsize=${style.fontsize}:fontcolor=yellow@1:` +
+        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}@1:` +
+        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2-30`,
+
+        // Segunda línea (primera mitad)
+        `drawtext=enable='between(t,${timeStart},${midTime})':` +
+        `fontfile=mrbeast.ttf:text='${line2}':` +
+        `fontsize=${style.fontsize}:fontcolor=white@1:` +
+        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}@1:` +
+        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2+30`,
+
+        // Primera línea (segunda mitad)
+        `drawtext=enable='between(t,${midTime},${timeEnd})':` +
+        `fontfile=mrbeast.ttf:text='${line1}':` +
+        `fontsize=${style.fontsize}:fontcolor=white@1:` +
+        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}@1:` +
+        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2-30`,
+
+        // Segunda línea (segunda mitad)
+        `drawtext=enable='between(t,${midTime},${timeEnd})':` +
+        `fontfile=mrbeast.ttf:text='${line2}':` +
+        `fontsize=${style.fontsize}:fontcolor=yellow@1:` +
+        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}@1:` +
+        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2+30`
+      ].join(',');
     }
+
+    // Estilo normal con fade in
+    return `drawtext=enable='between(t,${timeStart},${timeEnd})':` +
+           `fontfile=mrbeast.ttf:text='${escapeText(text)}':` +
+           `fontsize=${style.fontsize}:fontcolor=${style.fontcolor}@1:` +
+           `alpha='if(lt(t-${timeStart},${fadeInDuration}),` +
+           `(t-${timeStart})/${fadeInDuration},1)':borderw=${style.borderw}:` +
+           `bordercolor=${style.bordercolor}@1:` +
+           `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
+           `shadowy=${style.shadowy}:x=(w-text_w)/2:y=${style.y}`;
   };
 
   // Modificar el botón de generar historia para incluir la barra de progreso
