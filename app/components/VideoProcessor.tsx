@@ -42,7 +42,7 @@ const subtitleStyles = [
   },
   {
     name: 'TikTok Split',
-    fontsize: 50,
+    fontsize: 45,
     fontcolor: 'white',
     borderw: 6,
     bordercolor: 'black',
@@ -54,6 +54,38 @@ const subtitleStyles = [
     y: '(h-text_h)/2-30', // Centrado vertical, ajustado para las dos líneas
   }
 ];
+
+const transitionTypes = [
+  {
+    name: 'Fade',
+    value: 'fade',
+    description: 'Fundido suave entre imágenes'
+  },
+  {
+    name: 'Slide Left',
+    value: 'slideLeft',
+    description: 'Deslizamiento hacia la izquierda'
+  },
+  {
+    name: 'Slide Right',
+    value: 'slideRight',
+    description: 'Deslizamiento hacia la derecha'
+  },
+  {
+    name: 'Zoom Out',
+    value: 'zoomOut',
+    description: 'Efecto de círculo cerrándose'
+  },
+  {
+    name: 'Zoom In',
+    value: 'zoomIn',
+    description: 'Efecto de círculo abriéndose'
+  }
+];
+
+const fadeFilter = (start: number, duration: number = 0.2): string => {
+  return `alpha='if(lt(t-${start},${duration}),1*((t-${start})/${duration}),1)'`;
+};
 
 export default function VideoProcessor() {
   const [loading, setLoading] = useState(false);
@@ -76,6 +108,8 @@ export default function VideoProcessor() {
   const [selectedSegmentIndex, setSelectedSegmentIndex] = useState<number | null>(null);
   const [customImagePrompt, setCustomImagePrompt] = useState('');
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [selectedTransition, setSelectedTransition] = useState(transitionTypes[0]);
+  const [includeSubscribeTag, setIncludeSubscribeTag] = useState(false);
 
   // Cargar la fuente globalmente
   useEffect(() => {
@@ -390,6 +424,27 @@ export default function VideoProcessor() {
     return effects[index % effects.length].replace('$duration', duration.toString());
   };
 
+  const getTransitionFilter = (index: number, totalSegments: number) => {
+    switch (selectedTransition.value) {
+      case 'slideLeft':
+        return 'xfade=transition=slideleft';
+      case 'slideRight':
+        return 'xfade=transition=slideright';
+      case 'zoomOut':
+        // Usar transiciones más compatibles para zoom
+        return 'xfade=transition=circleclose';
+      case 'zoomIn':
+        // Usar transiciones más compatibles para zoom
+        return 'xfade=transition=circleopen';
+      case 'fade':
+      default:
+        return 'xfade=transition=fade';
+    }
+  };
+
+  // Añadir una constante para la duración de la transición
+  const TRANSITION_DURATION = 0.5; // medio segundo para la transición
+
   const generateFinalVideo = async () => {
     if (!ffmpeg || !ffmpegLoaded) {
       setMessage('Error: FFmpeg no está inicializado. Por favor, recarga la página.');
@@ -415,13 +470,16 @@ export default function VideoProcessor() {
         const duration = await getAudioDuration(audioBlob);
         console.log(`✓ Audio ${i + 1} generado (duración: ${duration}s)`);
 
+        // Añadir tiempo extra para la transición, excepto para el último segmento
+        const transitionTime = i < updatedSegments.length - 1 ? TRANSITION_DURATION : 0;
+
         updatedSegments[i] = {
           ...updatedSegments[i],
           timeStart: currentTime,
-          timeEnd: currentTime + duration,
+          timeEnd: currentTime + duration + transitionTime, // Añadimos el tiempo de transición
           subSegments: undefined
         };
-        currentTime += duration;
+        currentTime += duration + transitionTime;
         blobs.push(audioBlob);
       }
 
@@ -466,9 +524,7 @@ export default function VideoProcessor() {
       setMessage('Preparando imágenes...');
       console.log('🖼️ Preparando imágenes para el video...');
 
-      let filterComplex = '';
-
-      // Primero creamos los inputs para cada imagen y aplicamos el efecto de zoom a cada una
+      // Asegúrate de que las imágenes se escriben correctamente
       for (let i = 0; i < updatedSegments.length; i++) {
         const segment = updatedSegments[i];
         if (!segment.imageUrl) continue;
@@ -478,59 +534,85 @@ export default function VideoProcessor() {
         await ffmpeg.writeFile(`image_${i}.jpg`, new Uint8Array(imageData));
       }
 
-      // Construir el filter complex para cada segmento
-      for (let i = 0; i < updatedSegments.length; i++) {
-        // Iteramos por cada segmento para construir su filtro
-        // Definimos el input stream para esta imagen
-        filterComplex += `[${i}:v]`;
-        // Escalamos la imagen a 540x960 manteniendo aspect ratio
-        filterComplex += 'scale=540:960:force_original_aspect_ratio=increase,';
-        // Recortamos la imagen al tamaño exacto deseado
-        filterComplex += 'crop=540:960,';
-        // Establecemos fps
-        filterComplex += 'fps=10,';
-        // Aplicamos zoom lento
-        filterComplex += 'zoompan=z=\'min(zoom+0.0015,1.5)\':d=125:s=540x960:fps=10,';
+      let filterComplex = '';
 
-        // Agregamos fade in solo para el primer segmento
+      // Primero procesamos cada imagen individualmente
+      for (let i = 0; i < updatedSegments.length; i++) {
+        const segment = updatedSegments[i];
+        const duration = segment.timeEnd - segment.timeStart;
+
+        // Escalado y procesamiento básico de cada imagen
+        filterComplex += `[${i}:v]scale=540:960:force_original_aspect_ratio=increase,`;
+        filterComplex += 'crop=540:960,';
+        filterComplex += 'fps=30,';
+
+        // Aplicamos el efecto de zoom
+        filterComplex += `zoompan=z='min(zoom+0.0015,1.5)':d=${Math.round(duration*30)}:s=540x960:fps=30,`;
+
+        // Fade in para el primer segmento
         if (i === 0) {
-          filterComplex += 'fade=in:st=0:d=1.5,'; // Fade in de 1.5 segundos
+          filterComplex += 'fade=in:st=0:d=1.5,';
         }
 
-        // Recortamos al tiempo exacto del segmento
-        filterComplex += `trim=0:${updatedSegments[i].timeEnd - updatedSegments[i].timeStart},`;
-        // Reiniciamos el timestamp para que empiece en 0
+        // Establecemos la duración exacta del segmento
+        filterComplex += `trim=0:${duration},`;
         filterComplex += 'setpts=PTS-STARTPTS';
-        // Nombramos el output stream para este segmento
-        filterComplex += `[v${i}];`;
+
+        // Nombramos el output stream
+        filterComplex += `[base${i}];`;
       }
 
-      // Concatenar todos los segmentos
-      for (let i = 0; i < updatedSegments.length; i++) {
-        filterComplex += `[v${i}]`;
+      // Ahora aplicamos las transiciones
+      if (updatedSegments.length > 1) {
+        // Procesamos el primer segmento
+        filterComplex += `[base0]`;
+
+        // Aplicamos transiciones entre segmentos consecutivos
+        for (let i = 1; i < updatedSegments.length; i++) {
+          const transition = getTransitionFilter(i, updatedSegments.length);
+          // Ajustar el offset para que comience TRANSITION_DURATION segundos antes del final
+          const offset = updatedSegments[i-1].timeEnd - TRANSITION_DURATION;
+
+          if (i === 1) {
+            filterComplex += `[base1]${transition}:duration=${TRANSITION_DURATION}:offset=${offset}[v1];`;
+          } else {
+            filterComplex += `[v${i-1}][base${i}]${transition}:duration=${TRANSITION_DURATION}:offset=${offset}[v${i}];`;
+          }
+        }
+
+        // Usamos el último stream como salida final
+        filterComplex += `[v${updatedSegments.length-1}]`;
+      } else {
+        // Si solo hay un segmento, usamos su base directamente
+        filterComplex += `[base0]`;
       }
-      filterComplex += `concat=n=${updatedSegments.length}:v=1:a=0[v]`;
 
-      // Construir los argumentos de entrada
-      const inputArgs = updatedSegments.map((segment, i) => [
-        '-loop', '1',
-        '-i', `image_${i}.jpg`  // Removemos -t aquí ya que lo manejamos con trim
-      ]).flat();
+      // Configuración final del video
+      filterComplex += `format=yuv420p[v]`;
 
-      // Generar el video base
+      // Modificar los argumentos de entrada para incluir el tiempo de transición
+      const inputArgs = updatedSegments.map((segment, i) => {
+        const duration = segment.timeEnd - segment.timeStart;
+        return [
+          '-loop', '1',
+          '-t', `${duration}`, // Ya incluye el tiempo de transición desde el cálculo anterior
+          '-i', `image_${i}.jpg`
+        ];
+      }).flat();
+
+      // Generar el video base con los nuevos argumentos
       await ffmpeg.exec([
         ...inputArgs,
         '-filter_complex', filterComplex,
         '-map', '[v]',
-        '-vsync', '1',
+        '-fps_mode', 'cfr',
         '-pix_fmt', 'yuv420p',
-        '-r', '10',
+        '-r', '30',
         '-preset', 'ultrafast',
         '-tune', 'fastdecode',
         '-threads', '0',
         '-c:v', 'libx264',
-        '-crf', '28',
-        '-t', currentTime.toString(),
+        '-crf', '23',
         '-movflags', '+faststart',
         'input.mp4'
       ]);
@@ -607,14 +689,15 @@ export default function VideoProcessor() {
       setMessage('Generando video final...');
       console.log('🎥 Comenzando generación del video final...');
 
-      const ffmpegArgs = [
+      let ffmpegArgs = [
         '-i', 'input.mp4',
         '-i', 'output.mp3',
-        '-filter_complex', `[0:v]${finalFilter}[v]`,  // Envolver el filtro en un stream
-        '-map', '[v]',  // Usar el stream de video filtrado
+        '-filter_complex',
+        `[0:v]${finalFilter}[v]`,
+        '-map', '[v]',
         '-map', '1:a:0',
         '-c:v', 'libx264',
-        '-r', '10',
+        '-r', '30',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-c:a', 'aac',
@@ -625,19 +708,62 @@ export default function VideoProcessor() {
         '-t', currentTime.toString(),
         '-shortest',
         '-async', '1',
-        '-vsync', '1',
+        '-fps_mode', 'vfr',
         '-y',
         'final_output.mp4'
       ];
 
-      console.log('Ejecutando FFmpeg con argumentos:', ffmpegArgs.join(' '));
+      // Generar el video inicial
       await ffmpeg.exec(ffmpegArgs);
+      console.log('✅ Video base generado correctamente');
 
-      // Step 8: Download final video
-      setProgress(95);
-      setMessage('Preparando video para descarga...');
-      console.log('📥 Preparando descarga...');
+      // Modificar la parte donde ejecutamos FFmpeg con el GIF
+      if (includeSubscribeTag) {
+        console.log('🎯 Añadiendo tag de suscripción al final del video...');
+        try {
+          // Renombrar el video original
+          await ffmpeg.exec(['-i', 'final_output.mp4', '-c', 'copy', 'temp_video.mp4']);
 
+          const subscribeResponse = await fetch('/tags/suscribe.gif');
+          if (!subscribeResponse.ok) {
+            throw new Error(`No se pudo cargar el gif de suscripción. Status: ${subscribeResponse.status}`);
+          }
+
+          const subscribeData = await subscribeResponse.arrayBuffer();
+          await ffmpeg.writeFile('subscribe.gif', new Uint8Array(subscribeData));
+          console.log('✅ GIF de suscripción preparado');
+
+          // Concatenar el video original con el GIF - ahora sin loop
+          await ffmpeg.exec([
+            '-i', 'temp_video.mp4',
+            '-i', 'subscribe.gif',  // Quitamos stream_loop para que se reproduzca una sola vez
+            '-filter_complex',
+            '[1:v]scale=540:960,fps=30[gif];[0:v][gif]concat=n=2:v=1:a=0[outv]',
+            '-map', '[outv]',
+            '-map', '0:a',
+            '-c:v', 'libx264',
+            '-c:a', 'copy',
+            '-y',
+            'final_output_with_subscribe.mp4'
+          ]);
+
+          // Reemplazar el video final
+          await ffmpeg.exec([
+            '-i', 'final_output_with_subscribe.mp4',
+            '-c', 'copy',
+            '-y',
+            'final_output.mp4'
+          ]);
+
+          console.log('✅ Tag de suscripción añadido correctamente');
+        } catch (error) {
+          console.error('❌ Error al añadir tag de suscripción:', error);
+          console.error('Stack trace:', error.stack);
+          setMessage('Error al añadir la animación de suscripción. Se mantendrá el video original.');
+        }
+      }
+
+      // Continuar con el código existente para descargar el video...
       const data = await ffmpeg.readFile('final_output.mp4');
       const blob = new Blob([data], { type: 'video/mp4' });
       const videoUrl = URL.createObjectURL(blob);
@@ -650,16 +776,10 @@ export default function VideoProcessor() {
       setMessage('¡Video generado con éxito!');
       setCurrentStep(ProcessStep.COMPLETED);
     } catch (error) {
-      console.error('Error detallado:', error);
-      setMessage(`Error generando el video: ${error.message}`);
-      throw error;
-    } finally {
+      console.error('❌ Error general en generateFinalVideo:', error);
+      console.error('Stack trace:', error.stack);
+      setMessage('Error al generar el video');
       setLoading(false);
-      try {
-        await ffmpeg?.terminate();
-      } catch (error) {
-        console.error('Error terminando FFmpeg:', error);
-      }
     }
   };
 
@@ -821,79 +941,61 @@ export default function VideoProcessor() {
     );
   };
 
-  const generateTextFilter = (text: string, style: typeof subtitleStyles[0], timeStart: number, timeEnd: number) => {
+  const generateTextFilter = (
+    text: string,
+    style: typeof subtitleStyles[0],
+    startTime: number,
+    endTime: number
+  ): string => {
     const fadeInDuration = 0.2;
+    const fadeInFilter = `if(lt(t-${startTime},${fadeInDuration}),1*((t-${startTime})/${fadeInDuration}),1)`;
 
-    // Escapar caracteres especiales de manera más robusta
-    const escapeText = (text: string) => {
-      return text
-        .replace(/[\\]/g, '\\\\')      // Escapar backslashes primero
-        .replace(/[']/g, "\\\\'")      // Escapar comillas simples
-        .replace(/[:]/g, '\\\\:')      // Escapar dos puntos
-        .replace(/[\[]/g, '\\\\[')     // Escapar corchetes
-        .replace(/[\]]/g, '\\\\]');    // Escapar corchetes
-    };
+    if (style.splitColors && text.includes(' ')) {
+      // Dividir el texto en dos líneas
+      const [firstLine, ...rest] = text.split(' ');
+      const secondLine = rest.join(' ');
 
-    if (style.splitColors) {
-      const lines = text.split(' ');
-      const midpoint = Math.ceil(lines.length / 2);
-      const line1 = escapeText(lines.slice(0, midpoint).join(' '));
-      const line2 = escapeText(lines.slice(midpoint).join(' '));
-      const duration = timeEnd - timeStart;
-      const midTime = timeStart + (duration / 2);
-
-      const getAlpha = (t: string) =>
-        `if(lt(${t}-${timeStart},${fadeInDuration}),` +
-        `(${t}-${timeStart})/${fadeInDuration},1)`;
-
-      return [
-        // Primera línea (primera mitad)
-        `drawtext=enable='between(t,${timeStart},${midTime})':` +
-        `fontfile=mrbeast.ttf:text='${line1}':` +
-        `fontsize=${style.fontsize}:fontcolor=yellow@1:` +
-        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}@1:` +
-        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
-        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2-30`,
-
-        // Segunda línea (primera mitad)
-        `drawtext=enable='between(t,${timeStart},${midTime})':` +
-        `fontfile=mrbeast.ttf:text='${line2}':` +
-        `fontsize=${style.fontsize}:fontcolor=white@1:` +
-        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}@1:` +
-        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
-        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2+30`,
-
-        // Primera línea (segunda mitad)
-        `drawtext=enable='between(t,${midTime},${timeEnd})':` +
-        `fontfile=mrbeast.ttf:text='${line1}':` +
-        `fontsize=${style.fontsize}:fontcolor=white@1:` +
-        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}@1:` +
-        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
-        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2-30`,
-
-        // Segunda línea (segunda mitad)
-        `drawtext=enable='between(t,${midTime},${timeEnd})':` +
-        `fontfile=mrbeast.ttf:text='${line2}':` +
-        `fontsize=${style.fontsize}:fontcolor=yellow@1:` +
-        `alpha='${getAlpha('t')}':borderw=${style.borderw}:` +
-        `bordercolor=${style.bordercolor}@1:` +
-        `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
-        `shadowy=${style.shadowy}:x=(w-text_w)/2:y=(h-text_h)/2+30`
-      ].join(',');
+      return `drawtext=enable='between(t,${startTime},${endTime})':` +
+        `fontfile=mrbeast.ttf:` +
+        `text='${firstLine}':` +
+        `fontsize=${style.fontsize}:` +
+        `fontcolor=${style.fontcolor}:` +
+        `alpha='${fadeInFilter}':` +
+        `borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}:` +
+        `shadowcolor=${style.shadowcolor}:` +
+        `shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:` +
+        `x=(w-text_w)/2:` +
+        `y=${style.y},` +
+        `drawtext=enable='between(t,${startTime},${endTime})':` +
+        `fontfile=mrbeast.ttf:` +
+        `text='${secondLine}':` +
+        `fontsize=${style.fontsize}:` +
+        `fontcolor=${style.secondLineColor}:` +
+        `alpha='${fadeInFilter}':` +
+        `borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}:` +
+        `shadowcolor=${style.shadowcolor}:` +
+        `shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:` +
+        `x=(w-text_w)/2:` +
+        `y=(h-text_h)/2+30`;
+    } else {
+      return `drawtext=enable='between(t,${startTime},${endTime})':` +
+        `fontfile=mrbeast.ttf:` +
+        `text='${text}':` +
+        `fontsize=${style.fontsize}:` +
+        `fontcolor=${style.fontcolor}:` +
+        `alpha='${fadeInFilter}':` +
+        `borderw=${style.borderw}:` +
+        `bordercolor=${style.bordercolor}:` +
+        `shadowcolor=${style.shadowcolor}:` +
+        `shadowx=${style.shadowx}:` +
+        `shadowy=${style.shadowy}:` +
+        `x=(w-text_w)/2:` +
+        `y=${style.y}`;
     }
-
-    // Estilo normal con fade in
-    return `drawtext=enable='between(t,${timeStart},${timeEnd})':` +
-           `fontfile=mrbeast.ttf:text='${escapeText(text)}':` +
-           `fontsize=${style.fontsize}:fontcolor=${style.fontcolor}@1:` +
-           `alpha='if(lt(t-${timeStart},${fadeInDuration}),` +
-           `(t-${timeStart})/${fadeInDuration},1)':borderw=${style.borderw}:` +
-           `bordercolor=${style.bordercolor}@1:` +
-           `shadowcolor=${style.shadowcolor}:shadowx=${style.shadowx}:` +
-           `shadowy=${style.shadowy}:x=(w-text_w)/2:y=${style.y}`;
   };
 
   // Modificar el botón de generar historia para incluir la barra de progreso
@@ -1021,6 +1123,45 @@ export default function VideoProcessor() {
             </option>
           ))}
         </select>
+      </div>
+
+      {/* Transition Style Selection */}
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Estilo de Transición
+        </label>
+        <select
+          value={selectedTransition.value}
+          onChange={(e) => {
+            const transition = transitionTypes.find(t => t.value === e.target.value);
+            if (transition) setSelectedTransition(transition);
+          }}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {transitionTypes.map(transition => (
+            <option key={transition.value} value={transition.value}>
+              {transition.name} - {transition.description}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Subscribe Tag Option - Añadir después del selector de transición */}
+      <div className="mb-4">
+        <label className="flex items-center space-x-3">
+          <input
+            type="checkbox"
+            checked={includeSubscribeTag}
+            onChange={(e) => setIncludeSubscribeTag(e.target.checked)}
+            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+          />
+          <span className="text-sm font-medium text-gray-700">
+            Incluir animación de suscripción al final del video
+          </span>
+        </label>
+        <p className="mt-1 text-sm text-gray-500">
+          Añade una animación de "Suscríbete" durante los últimos 2 segundos del video
+        </p>
       </div>
 
       {/* Subtitle Preview */}
