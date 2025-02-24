@@ -460,6 +460,7 @@ export default function VideoProcessor() {
       let currentTime = 0;
       const blobs: Blob[] = [];
 
+      let videoDuration = 0;
       // Generate all audio files first and get exact durations
       for (let i = 0; i < updatedSegments.length; i++) {
         setProgress(Math.round((i / segments.length) * 25));
@@ -469,7 +470,8 @@ export default function VideoProcessor() {
         const audioBlob = await generateAudioForSegment(updatedSegments[i].narration, i);
         const duration = await getAudioDuration(audioBlob);
         console.log(`✓ Audio ${i + 1} generado (duración: ${duration}s)`);
-
+        videoDuration += duration;
+        console.log('📊 Duración actual del video:', videoDuration, 'segundos');
         // Añadir tiempo extra para la transición, excepto para el último segmento
         const transitionTime = i < updatedSegments.length - 1 ? TRANSITION_DURATION : 0;
 
@@ -719,7 +721,7 @@ export default function VideoProcessor() {
 
       // Modificar la parte donde ejecutamos FFmpeg con el GIF
       if (includeSubscribeTag) {
-        console.log('🎯 Añadiendo tag de suscripción al final del video...');
+        console.log('🎯 Añadiendo tag de suscripción superpuesto al final del video...');
         try {
           // Renombrar el video original
           await ffmpeg.exec(['-i', 'final_output.mp4', '-c', 'copy', 'temp_video.mp4']);
@@ -733,16 +735,18 @@ export default function VideoProcessor() {
           await ffmpeg.writeFile('subscribe.gif', new Uint8Array(subscribeData));
           console.log('✅ GIF de suscripción preparado');
 
-          // Concatenar el video original con el GIF - ahora sin loop
+          console.log('📊 Duración total del video:', videoDuration, 'segundos');
+
+          // Nuevo enfoque para el GIF con tamaño más grande y centrado
           await ffmpeg.exec([
             '-i', 'temp_video.mp4',
-            '-i', 'subscribe.gif',  // Quitamos stream_loop para que se reproduzca una sola vez
+            '-ignore_loop', '0', // Ignorar el loop del GIF
+            '-i', 'subscribe.gif',
             '-filter_complex',
-            '[1:v]scale=540:960,fps=30[gif];[0:v][gif]concat=n=2:v=1:a=0[outv]',
-            '-map', '[outv]',
+            `[1:v]scale=525:930,setpts=PTS-STARTPTS+${videoDuration-2}/TB[gif];` + // Ajustar el timing del GIF
+            `[0:v][gif]overlay=(W-w)/2:(H-h)/15:enable='between(t,${videoDuration-2},${videoDuration})'`,
             '-map', '0:a',
-            '-c:v', 'libx264',
-            '-c:a', 'copy',
+            '-t', videoDuration.toString(),
             '-y',
             'final_output_with_subscribe.mp4'
           ]);
