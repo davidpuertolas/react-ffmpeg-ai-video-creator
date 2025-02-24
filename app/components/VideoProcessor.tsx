@@ -726,26 +726,40 @@ export default function VideoProcessor() {
           // Renombrar el video original
           await ffmpeg.exec(['-i', 'final_output.mp4', '-c', 'copy', 'temp_video.mp4']);
 
+          // Cargar el GIF
           const subscribeResponse = await fetch('/tags/suscribe.gif');
           if (!subscribeResponse.ok) {
             throw new Error(`No se pudo cargar el gif de suscripción. Status: ${subscribeResponse.status}`);
           }
-
           const subscribeData = await subscribeResponse.arrayBuffer();
           await ffmpeg.writeFile('subscribe.gif', new Uint8Array(subscribeData));
-          console.log('✅ GIF de suscripción preparado');
 
+          // Cargar el sonido de click
+          const clickResponse = await fetch('/tags/click.mp3');
+          if (!clickResponse.ok) {
+            throw new Error(`No se pudo cargar el sonido de click. Status: ${clickResponse.status}`);
+          }
+          const clickData = await clickResponse.arrayBuffer();
+          await ffmpeg.writeFile('click.mp3', new Uint8Array(clickData));
+
+          console.log('✅ GIF y sonido preparados');
           console.log('📊 Duración total del video:', videoDuration, 'segundos');
 
-          // Nuevo enfoque para el GIF con tamaño más grande y centrado
+          // Nuevo enfoque combinando video, GIF y sonido
           await ffmpeg.exec([
             '-i', 'temp_video.mp4',
-            '-ignore_loop', '0', // Ignorar el loop del GIF
+            '-ignore_loop', '0',
             '-i', 'subscribe.gif',
+            '-i', 'click.mp3', // Añadir el sonido de click
             '-filter_complex',
-            `[1:v]scale=525:930,setpts=PTS-STARTPTS+${videoDuration-2}/TB[gif];` + // Ajustar el timing del GIF
-            `[0:v][gif]overlay=(W-w)/2:(H-h)/15:enable='between(t,${videoDuration-2},${videoDuration})'`,
-            '-map', '0:a',
+            `[1:v]scale=525:930,setpts=PTS-STARTPTS+${videoDuration-2}/TB[gif];` +
+            `[0:v][gif]overlay=(W-w)/2:(H-h)/15:enable='between(t,${videoDuration-2},${videoDuration})'[v];` +
+            // Ajustar el timing y volumen del click
+            `[2:a]adelay=${(videoDuration-1)*1000}|${(videoDuration-1)*1000},volume=1[click];` +
+            // Mezclar el audio original con el click
+            `[0:a][click]amix=inputs=2:duration=first[a]`,
+            '-map', '[v]',
+            '-map', '[a]',
             '-t', videoDuration.toString(),
             '-y',
             'final_output_with_subscribe.mp4'
@@ -759,7 +773,7 @@ export default function VideoProcessor() {
             'final_output.mp4'
           ]);
 
-          console.log('✅ Tag de suscripción añadido correctamente');
+          console.log('✅ Tag de suscripción y sonido añadidos correctamente');
         } catch (error) {
           console.error('❌ Error al añadir tag de suscripción:', error);
           console.error('Stack trace:', error.stack);
