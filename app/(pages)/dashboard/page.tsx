@@ -6,29 +6,25 @@ import {
   PhotoIcon,
   MusicalNoteIcon,
   DocumentTextIcon,
-  ArrowRightIcon
+  ArrowRightIcon,
+
 } from '@heroicons/react/24/outline';
+import {
+  Pencil,
+  MessageCircle,
+ } from 'lucide-react';
 import { useState } from 'react';
 
 const tools = [
 
   {
-    name: 'TikTok Generator',
+    name: 'TikTok Video Generator',
     description: 'Generate viral TikTok content',
     icon: <MusicalNoteIcon className="w-6 h-6 text-pink-500" />,
     href: '/tiktok-video',
     color: 'bg-pink-500/10',
     borderColor: 'border-pink-500/20',
-    comingSoon: true
-  },
-  {
-    name: 'Story Generator',
-    description: 'Create engaging story videos',
-    icon: <DocumentTextIcon className="w-6 h-6 text-green-500" />,
-    href: '/story-video',
-    color: 'bg-green-500/10',
-    borderColor: 'border-green-500/20',
-    comingSoon: true
+    comingSoon: false
   },
   {
     name: 'Reddit Video Generator',
@@ -42,11 +38,20 @@ const tools = [
   {
     name: 'Chat Video Generator',
     description: 'Turn conversations into engaging videos',
-    icon: <VideoCameraIcon className="w-6 h-6 text-purple-500" />,
+    icon: <MessageCircle className="w-6 h-6 text-purple-500" />,
     href: '/chat-video',
     color: 'bg-purple-500/10',
     borderColor: 'border-purple-500/20',
     comingSoon: false
+  },
+  {
+    name: 'AI Video Editor',
+    description: 'From raw videos to engaging stories',
+    icon: <Pencil className="w-6 h-6 text-green-500" />,
+    href: '/edit-video',
+    color: 'bg-green-500/10',
+    borderColor: 'border-green-500/20',
+    comingSoon: true
   },
   {
     name: 'HopeCore Style',

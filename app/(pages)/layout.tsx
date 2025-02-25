@@ -10,6 +10,7 @@ import {
   UserGroupIcon,
   ArrowLeftIcon
 } from '@heroicons/react/24/outline';
+import { Pencil } from 'lucide-react';
 import ProfileMenu from '@/app/components/ProfileMenu';
 
 const navigation = [
@@ -22,6 +23,11 @@ const navigation = [
     name: 'Video Generator',
     href: '/reddit-video',
     icon: VideoCameraIcon
+  },
+  {
+    name: 'Video Editor',
+    href: '/video-editor',
+    icon: Pencil
   },
   {
     name: 'My Projects',

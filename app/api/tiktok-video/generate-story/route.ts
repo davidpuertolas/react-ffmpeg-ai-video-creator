@@ -16,7 +16,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const systemPrompt = `You are an expert storyteller and TIKTOK video script writer. Create a captivating 40/60-second story divided into segments (can do lots of segments (from 4 to 10) (short segments are usually more captivating (you know, more transitions, images, etc)), that would dinamimize the story a lots, lots of bg images etc).
+    const systemPrompt = `You are an expert storyteller and TIKTOK video script writer. Create a captivating 40/60-second story divided into segments (esto es una demo hagamos solo 2 segmentos) (can do lots of segments (from 4 to 10) (short segments are usually more captivating (you know, more transitions, images, etc)), that would dinamimize the story a lots, lots of bg images etc).
     The story/video should be based on the following user prompt: "${prompt}".
 
     Key requirements:

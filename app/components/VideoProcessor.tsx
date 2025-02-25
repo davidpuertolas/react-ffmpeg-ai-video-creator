@@ -28,6 +28,12 @@ enum ProcessStep {
   COMPLETED = 'completed'
 }
 
+enum BackgroundMusic {
+  NONE = 'none',
+  STORYTELLING = 'storytelling',
+  TENSE = 'tense'
+}
+
 const subtitleStyles = [
   {
     name: 'Classic',
@@ -83,6 +89,24 @@ const transitionTypes = [
   }
 ];
 
+const backgroundMusicOptions = [
+  {
+    value: BackgroundMusic.NONE,
+    name: 'Sin música',
+    description: 'Solo narración'
+  },
+  {
+    value: BackgroundMusic.STORYTELLING,
+    name: 'Storytelling',
+    description: 'Música suave para historias'
+  },
+  {
+    value: BackgroundMusic.TENSE,
+    name: 'Tense',
+    description: 'Música con tensión dramática'
+  }
+];
+
 const fadeFilter = (start: number, duration: number = 0.2): string => {
   return `alpha='if(lt(t-${start},${duration}),1*((t-${start})/${duration}),1)'`;
 };
@@ -110,6 +134,8 @@ export default function VideoProcessor() {
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [selectedTransition, setSelectedTransition] = useState(transitionTypes[0]);
   const [includeSubscribeTag, setIncludeSubscribeTag] = useState(false);
+  const [selectedMusic, setSelectedMusic] = useState<BackgroundMusic>(BackgroundMusic.NONE);
+  const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
 
   // Cargar la fuente globalmente
   useEffect(() => {
@@ -687,6 +713,33 @@ export default function VideoProcessor() {
 
       console.log('✅ Filtros de texto preparados');
 
+      // Después de combinar los audios pero antes de la generación final del video
+      if (selectedMusic !== BackgroundMusic.NONE) {
+        setMessage('Añadiendo música de fondo...');
+
+        // Cargar el archivo de música seleccionado
+        const musicResponse = await fetch(`/songs/${selectedMusic}.mp3`);
+        const musicArrayBuffer = await musicResponse.arrayBuffer();
+        await ffmpeg.writeFile('background_music.mp3', new Uint8Array(musicArrayBuffer));
+
+        // Combinar el audio narrado con la música de fondo
+        await ffmpeg.exec([
+          '-i', 'output.mp3',
+          '-i', 'background_music.mp3',
+          '-filter_complex',
+          '[0:a]volume=3[voice];[1:a]volume=0.3[music];[voice][music]amix=inputs=2:duration=first[aout]',
+          '-map', '[aout]',
+          'final_audio.mp3'
+        ]);
+
+        // Renombrar el audio final
+        await ffmpeg.exec([
+          '-i', 'final_audio.mp3',
+          '-c', 'copy',
+          'output.mp3'
+        ]);
+      }
+
       // Step 7: Final video generation
       setMessage('Generando video final...');
       console.log('🎥 Comenzando generación del video final...');
@@ -755,7 +808,7 @@ export default function VideoProcessor() {
             `[1:v]scale=525:930,setpts=PTS-STARTPTS+${videoDuration-2}/TB[gif];` +
             `[0:v][gif]overlay=(W-w)/2:(H-h)/15:enable='between(t,${videoDuration-2},${videoDuration})'[v];` +
             // Ajustar el timing y volumen del click
-            `[2:a]adelay=${(videoDuration-1)*1000}|${(videoDuration-1)*1000},volume=1[click];` +
+            `[2:a]adelay=${(videoDuration-1)*1000}|${(videoDuration-1)*1000},volume=0.3[click];` +
             // Mezclar el audio original con el click
             `[0:a][click]amix=inputs=2:duration=first[a]`,
             '-map', '[v]',
@@ -1114,6 +1167,93 @@ export default function VideoProcessor() {
     }
   };
 
+  // Añadir el selector de música antes del botón de generar video
+  const renderMusicSelector = () => (
+    <div className="mb-4">
+      <label className="block text-sm font-medium text-gray-700 mb-2">
+        Música de Fondo
+      </label>
+      <select
+        value={selectedMusic}
+        onChange={(e) => setSelectedMusic(e.target.value as BackgroundMusic)}
+        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        {backgroundMusicOptions.map(option => (
+          <option key={option.value} value={option.value}>
+            {option.name} - {option.description}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
+  // Añadir función para regenerar el script de un segmento
+  const regenerateSegmentScript = async (index: number) => {
+    try {
+      setRegeneratingIndex(index);
+      setMessage(`Regenerando script del segmento ${index + 1}...`);
+
+      const requestData = {
+        systemMessage: `Eres un experto en guiones de TikTok. Se te proporcionará un guion completo y se te pedirá regenerar un segmento específico manteniendo la coherencia con el resto de la historia.`,
+        prompt: `Este es un guion de TikTok existente con ${segments.length} segmentos:
+
+${segments.map((seg, i) => `
+SEGMENTO ${i + 1}:
+Narración: "${seg.narration}"
+Descripción Visual: "${seg.visualDescription}"
+`).join('\n')}
+
+Por favor, regenera SOLO la narración del SEGMENTO ${index + 1}, manteniendo la coherencia con el resto de la historia.
+
+El nuevo segmento debe mantener un estilo similar y conectar bien con los segmentos anterior y siguiente, pero puede ser diferente al actual (siempre y cuando sea coherente con la imagen (descripción visual)).
+Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
+        segmentIndex: index,
+        currentStory: {
+          segments: segments.map(seg => ({
+            narration: seg.narration,
+            visualDescription: seg.visualDescription
+          }))
+        }
+      };
+
+      console.log('🔄 Regenerando segmento:', index + 1);
+      console.log('📝 Prompt original de la historia:', storyPrompt);
+      console.log('🎯 Instrucciones enviadas a la IA:', requestData.prompt);
+      console.log('📚 Contexto completo:', requestData.currentStory);
+
+      const response = await fetch('/api/tiktok-video/generate-story', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestData),
+      });
+
+      const data = await response.json();
+      console.log('✅ Respuesta de la IA:', data);
+
+      if (!data.segments || !data.segments[0]) {
+        throw new Error('Formato de respuesta inválido');
+      }
+
+      const updatedSegments = [...segments];
+      updatedSegments[index] = {
+        ...updatedSegments[index],
+        narration: data.segments[0].narration,
+        subSegments: undefined
+      };
+
+      console.log('📝 Nuevo texto generado:', data.segments[0].narration);
+      setSegments(updatedSegments);
+      setMessage('Script regenerado con éxito');
+    } catch (error) {
+      console.error('❌ Error regenerando script:', error);
+      setMessage('Error al regenerar el script');
+    } finally {
+      setRegeneratingIndex(null);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-8">
       {/* Steps Indicator */}
@@ -1265,9 +1405,25 @@ export default function VideoProcessor() {
                         <span className="font-semibold text-blue-600">
                           Segmento {index + 1}
                         </span>
-                        <span className="text-sm text-gray-500">
-                          {segment.timeStart}s - {segment.timeEnd}s
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-gray-500">
+                            {segment.timeStart}s - {segment.timeEnd}s
+                          </span>
+                          <button
+                            onClick={() => regenerateSegmentScript(index)}
+                            disabled={regeneratingIndex !== null}
+                            className="px-2 py-1 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-1"
+                          >
+                            {regeneratingIndex === index ? (
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                              </svg>
+                            )}
+                            {regeneratingIndex === index ? 'Regenerando...' : 'Regenerar Script'}
+                          </button>
+                        </div>
                       </div>
                       <div>
                         <h4 className="text-sm font-medium text-gray-700 mb-2">Narración:</h4>
@@ -1287,6 +1443,7 @@ export default function VideoProcessor() {
 
             {currentStep === ProcessStep.STORY_GENERATED && (
               <div className="space-y-6">
+                {renderMusicSelector()}
                 {renderGenerateVideoButton()}
               </div>
             )}
