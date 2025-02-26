@@ -111,6 +111,40 @@ const fadeFilter = (start: number, duration: number = 0.2): string => {
   return `alpha='if(lt(t-${start},${duration}),1*((t-${start})/${duration}),1)'`;
 };
 
+// Primero, definir constantes para todas las duraciones
+const TRANSITION_DURATION = 0.5;  // Duración de la transición entre segmentos
+const FADE_DURATION = 0.2;       // Duración de los fades de subtítulos
+const FINAL_EXTENSION = 2;       // Extensión del último segmento
+const SUBSCRIBE_TAG_DURATION = 2; // Duración del tag de suscripción
+const CLICK_SOUND_OFFSET = 1;    // Cuándo suena el click antes del final
+
+interface SegmentTiming {
+  audioStart: number;
+  audioEnd: number;
+  videoStart: number;
+  videoEnd: number;
+  transition: number;
+  extraTime: number;
+}
+
+const calculateSegmentTiming = (
+  audioDuration: number,
+  currentTime: number,
+  isLastSegment: boolean
+): SegmentTiming => {
+  const transition = isLastSegment ? 0 : TRANSITION_DURATION;
+  const extraTime = isLastSegment ? FINAL_EXTENSION : 0;
+
+  return {
+    audioStart: currentTime,
+    audioEnd: currentTime + audioDuration,
+    videoStart: currentTime,
+    videoEnd: currentTime + audioDuration + transition + extraTime,
+    transition,
+    extraTime
+  };
+};
+
 export default function VideoProcessor() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -278,6 +312,7 @@ export default function VideoProcessor() {
       }, 100);
 
       setMessage('Generando historia...');
+      console.log('📝 Generando historia con prompt:', prompt);
 
       const response = await fetch('/api/tiktok-video/generate-story', {
         method: 'POST',
@@ -288,31 +323,47 @@ export default function VideoProcessor() {
       });
 
       const story = await response.json();
-      console.log(story);
+      console.log('📖 Historia generada:', story);
+
       if (!story.segments || !Array.isArray(story.segments)) {
         throw new Error('Formato de respuesta inválido');
       }
 
-      // Ahora generamos las imágenes para cada segmento en paralelo
+      // Generar las imágenes para cada segmento en paralelo
       setMessage('Generando imágenes para la historia...');
       const segmentsWithImages = [...story.segments];
 
       try {
+        console.log('🎨 Iniciando generación de imágenes en paralelo...');
         const imagePromises = segmentsWithImages.map((segment, index) => {
-          setMessage(`Generando imágenes ${index + 1} de ${segmentsWithImages.length}...`);
-          return generateImageForSegment(segment.visualDescription)
-            .catch(error => {
-              console.error(`Error generando imagen ${index + 1}:`, error);
-              return null;
-            });
+          console.log(`📝 Preparando generación de imagen ${index + 1}/${segmentsWithImages.length}`);
+          return new Promise<string | null>(async (resolve) => {
+            try {
+              setMessage(`Generando imagen ${index + 1} de ${segmentsWithImages.length}...`);
+              const imageUrl = await generateImageForSegment(segment.visualDescription);
+              console.log(`✅ Imagen ${index + 1} generada correctamente`);
+              resolve(imageUrl);
+            } catch (error) {
+              console.error(`❌ Error generando imagen ${index + 1}:`, error);
+              resolve(null);
+            }
+          });
         });
 
+        console.log('⏳ Esperando que todas las imágenes se generen...');
         const imageUrls = await Promise.all(imagePromises);
+
+        const successCount = imageUrls.filter(url => url !== null).length;
+        console.log('📊 Resumen de generación de imágenes:', {
+          total: imageUrls.length,
+          success: successCount,
+          failed: imageUrls.length - successCount
+        });
 
         // Limpiar el intervalo cuando se complete
         clearInterval(progressInterval);
 
-        // Actualizamos los segmentos con las URLs de las imágenes
+        // Actualizar los segmentos con las URLs de las imágenes
         segmentsWithImages.forEach((segment, index) => {
           segment.imageUrl = imageUrls[index] || undefined;
         });
@@ -324,11 +375,11 @@ export default function VideoProcessor() {
         return segmentsWithImages;
       } catch (error) {
         clearInterval(progressInterval);
-        console.error('Error generando imágenes:', error);
+        console.error('❌ Error generando imágenes:', error);
         throw new Error('Error al generar las imágenes: ' + (error.message || 'Error desconocido'));
       }
     } catch (error) {
-      console.error('Error generating story:', error);
+      console.error('❌ Error generando historia:', error);
       throw new Error('Error al generar la historia: ' + (error.message || 'Error desconocido'));
     } finally {
       setLoading(false);
@@ -337,6 +388,7 @@ export default function VideoProcessor() {
 
   const generateAudioForSegment = async (text: string, index: number) => {
     try {
+      // Generar el audio de la narración
       const response = await fetch('/api/tiktok-video/generate-speech', {
         method: 'POST',
         headers: {
@@ -345,7 +397,23 @@ export default function VideoProcessor() {
         body: JSON.stringify({ text }),
       });
 
-      const blob = new Blob([await response.arrayBuffer()], { type: 'audio/mpeg' });
+      // Obtener el audio en blanco
+      const blankResponse = await fetch('/songs/blank.mp3');
+      if (!blankResponse.ok) {
+        throw new Error('No se pudo cargar el audio en blanco');
+      }
+
+      // Convertir ambos audios a ArrayBuffer
+      const speechBuffer = await response.arrayBuffer();
+      const blankBuffer = await blankResponse.arrayBuffer();
+
+      // Combinar los buffers
+      const combinedBuffer = new Uint8Array(speechBuffer.byteLength + blankBuffer.byteLength);
+      combinedBuffer.set(new Uint8Array(speechBuffer), 0);
+      combinedBuffer.set(new Uint8Array(blankBuffer), speechBuffer.byteLength);
+
+      // Crear el blob final
+      const blob = new Blob([combinedBuffer], { type: 'audio/mpeg' });
       return blob;
     } catch (error) {
       console.error(`Error generating audio for segment ${index}:`, error);
@@ -360,26 +428,26 @@ export default function VideoProcessor() {
     return audioBuffer.duration;
   };
 
-  const generateSRT = (segments: StorySegment[]) => {
+  const generateSRT = (segments: StorySegment[], timings: SegmentTiming[]) => {
     let srtContent = '';
     let subtitleIndex = 1;
 
-    segments.forEach(segment => {
+    segments.forEach((segment, index) => {
       if (!segment.subSegments) {
+        const timing = timings[index];
         const sentences = segment.narration.split('.').filter(s => s.trim());
         const subSegments: SubSegment[] = [];
-        const segmentDuration = (segment.timeEnd - segment.timeStart) - 0.3;
 
-        // Calcular el total de caracteres en todas las frases
-        const totalChars = sentences.reduce((sum, sentence) => sum + sentence.trim().length, 0);
-        let currentTime = segment.timeStart;
+        // Usar solo la duración del audio para los subtítulos
+        const audioDuration = timing.audioEnd - timing.audioStart;
+        let currentTime = timing.audioStart;
 
         sentences.forEach((sentence) => {
           const words = sentence.trim().split(' ');
           const wordsPerSubSegment = 3;
 
           // Calcular la duración proporcional basada en la longitud de la frase
-          const sentenceDuration = (sentence.length / totalChars) * segmentDuration;
+          const sentenceDuration = (sentence.length / sentences.reduce((sum, s) => sum + s.length, 0)) * audioDuration;
           const durationPerWord = sentenceDuration / words.length;
 
           for (let i = 0; i < words.length; i += wordsPerSubSegment) {
@@ -468,105 +536,192 @@ export default function VideoProcessor() {
     }
   };
 
-  // Añadir una constante para la duración de la transición
-  const TRANSITION_DURATION = 0.5; // medio segundo para la transición
-
-  const generateFinalVideo = async () => {
-    if (!ffmpeg || !ffmpegLoaded) {
-      setMessage('Error: FFmpeg no está inicializado. Por favor, recarga la página.');
-      throw new Error('FFmpeg no está inicializado');
-    }
-
+  // Añadir una función de utilidad para limpiar el sistema de archivos
+  const cleanupFFmpegFiles = async () => {
     try {
-      setLoading(true);
-      setCurrentStep(ProcessStep.GENERATING);
+      const files = [
+        'input.mp4',
+        'output.mp3',
+        'final_output.mp4',
+        'temp_video.mp4',
+        'concat.txt',
+        'mrbeast.ttf',
+        'subscribe.gif',
+        'click.mp3',
+        'background_music.mp3',
+        'final_audio.mp3'
+      ];
 
-      // Primero generamos y medimos todos los audios
-      const updatedSegments = [...segments];
-      let currentTime = 0;
-      const blobs: Blob[] = [];
-
-      let videoDuration = 0;
-      // Generate all audio files first and get exact durations
-      for (let i = 0; i < updatedSegments.length; i++) {
-        setProgress(Math.round((i / segments.length) * 25));
-        setMessage(`Generando audio ${i + 1} de ${segments.length}...`);
-        console.log(`🎵 Generando audio para segmento ${i + 1}...`);
-
-        const audioBlob = await generateAudioForSegment(updatedSegments[i].narration, i);
-        const duration = await getAudioDuration(audioBlob);
-        console.log(`✓ Audio ${i + 1} generado (duración: ${duration}s)`);
-        videoDuration += duration;
-        console.log('📊 Duración actual del video:', videoDuration, 'segundos');
-        // Añadir tiempo extra para la transición, excepto para el último segmento
-        const transitionTime = i < updatedSegments.length - 1 ? TRANSITION_DURATION : 0;
-
-        updatedSegments[i] = {
-          ...updatedSegments[i],
-          timeStart: currentTime,
-          timeEnd: currentTime + duration + transitionTime, // Añadimos el tiempo de transición
-          subSegments: undefined
-        };
-        currentTime += duration + transitionTime;
-        blobs.push(audioBlob);
+      // También limpiar los archivos de segmentos
+      for (let i = 0; i < segments.length; i++) {
+        files.push(`image_${i}.jpg`);
+        files.push(`segment_${i}.mp3`);
       }
 
-      setSegments(updatedSegments);
-      setAudioBlobs(blobs);
+      for (const file of files) {
+        try {
+          await ffmpeg.deleteFile(file);
+        } catch (error) {
+          console.log(`No se pudo eliminar ${file}:`, error);
+        }
+      }
+    } catch (error) {
+      console.error('Error limpiando archivos:', error);
+    }
+  };
 
-      // Step 2: Generate SRT with correct timings
-      setProgress(30);
-      setMessage('Generando subtítulos...');
-      console.log('📝 Generando archivo de subtítulos...');
-      const srt = generateSRT(updatedSegments); // Esto actualizará los subSegments
+  const generateFinalVideo = async () => {
+    try {
+      // Limpiar archivos anteriores antes de empezar
+      await cleanupFFmpegFiles();
+
+      setLoading(true);
+      setCurrentStep(ProcessStep.GENERATING);
+      console.log('🎬 Comenzando proceso de generación');
+
+      let totalVideoDuration = 0;
+      let totalAudioDuration = 0;
+      const segmentTimings: SegmentTiming[] = [];
+      const audioBlobs: Blob[] = [];
+
+      // Primer paso: Calcular todas las duraciones
+      for (let i = 0; i < segments.length; i++) {
+        const isLastSegment = i === segments.length - 1;
+
+        console.log(`🎵 Procesando audio del segmento ${i + 1}/${segments.length}`);
+        const audioBlob = await generateAudioForSegment(segments[i].narration, i);
+        const audioDuration = await getAudioDuration(audioBlob);
+
+        const timing = calculateSegmentTiming(audioDuration, totalVideoDuration, isLastSegment);
+        segmentTimings.push(timing);
+
+        totalAudioDuration += audioDuration;
+        totalVideoDuration = timing.videoEnd;
+
+        segments[i] = {
+          ...segments[i],
+          timeStart: timing.videoStart,
+          timeEnd: timing.videoEnd,
+          subSegments: undefined
+        };
+
+        console.log(`📊 Segmento ${i + 1}:`, {
+          audioDuration,
+          videoStart: timing.videoStart,
+          videoEnd: timing.videoEnd,
+          transition: timing.transition,
+          extraTime: timing.extraTime
+        });
+
+        audioBlobs.push(audioBlob);
+      }
+
+      console.log('⏱️ Duraciones totales:', {
+        audio: totalAudioDuration,
+        video: totalVideoDuration
+      });
+
+      // Generar SRT usando los timings calculados
+      const srt = generateSRT(segments, segmentTimings);
       setSrtContent(srt);
-      console.log('✅ Subtítulos generados correctamente');
 
       // Pequeña pausa para asegurar que todo está listo
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      if (!ffmpeg) {
-        throw new Error('FFmpeg no está inicializado');
-      }
-
       // Step 3: Initialize FFmpeg
+      console.log('🎬 Configurando FFmpeg');
       setProgress(40);
       setMessage('Preparando el procesador de video...');
-      console.log('🎬 Iniciando FFmpeg...');
 
       ffmpeg.on('log', ({ message }) => {
-        console.log('FFmpeg:', message);
+        console.log('📝 FFmpeg log:', message);
         if (message.includes('Error') || message.includes('error')) {
+          console.error('❌ FFmpeg error:', message);
           setMessage(`Error en FFmpeg: ${message}`);
         }
       });
 
-      ffmpeg.on('progress', ({ progress }) => {
-        const percentage = Math.round(progress * 50) + 40; // 40-90%
-        setProgress(percentage);
-        setMessage(`Mezclando video y audio: ${Math.round(progress * 100)}%`);
-      });
-
-      // Step 4: Load and prepare all files
+      // Step 4: Load and prepare images
+      console.log('🖼️ Comenzando procesamiento de imágenes');
       setProgress(45);
       setMessage('Preparando imágenes...');
-      console.log('🖼️ Preparando imágenes para el video...');
 
-      // Asegúrate de que las imágenes se escriben correctamente
-      for (let i = 0; i < updatedSegments.length; i++) {
-        const segment = updatedSegments[i];
-        if (!segment.imageUrl) continue;
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+        if (!segment.imageUrl) {
+          throw new Error(`No hay URL de imagen para el segmento ${i + 1}`);
+        }
 
-        const imageResponse = await fetch(segment.imageUrl);
-        const imageData = await imageResponse.arrayBuffer();
-        await ffmpeg.writeFile(`image_${i}.jpg`, new Uint8Array(imageData));
+        try {
+          console.log(`📥 Procesando imagen ${i + 1}/${segments.length}`);
+          const imageResponse = await fetch(segment.imageUrl);
+          if (!imageResponse.ok) {
+            throw new Error(`Error descargando imagen ${i + 1}: ${imageResponse.status}`);
+          }
+
+          const imageData = await imageResponse.arrayBuffer();
+          const filename = `image_${i}.jpg`;
+
+          // Verificar que el archivo no existe antes de escribir
+          try {
+            await ffmpeg.deleteFile(filename);
+          } catch (error) {
+            // Ignorar error si el archivo no existe
+          }
+
+          // Escribir el archivo
+          await ffmpeg.writeFile(filename, new Uint8Array(imageData));
+
+          // Verificar que se escribió correctamente
+          const fileData = await ffmpeg.readFile(filename);
+          if (!fileData || fileData.length === 0) {
+            throw new Error(`Error verificando imagen ${i + 1}`);
+          }
+        } catch (error) {
+          console.error(`Error procesando imagen ${i + 1}:`, error);
+          throw error;
+        }
+      }
+
+      // Modificar el procesamiento de audio
+      for (let i = 0; i < audioBlobs.length; i++) {
+        try {
+          const filename = `segment_${i}.mp3`;
+          const arrayBuffer = await audioBlobs[i].arrayBuffer();
+
+          // Limpiar archivo existente
+          try {
+            await ffmpeg.deleteFile(filename);
+          } catch (error) {
+            // Ignorar error si el archivo no existe
+          }
+
+          await ffmpeg.writeFile(filename, new Uint8Array(arrayBuffer));
+
+          // Verificar archivo
+          const fileData = await ffmpeg.readFile(filename);
+          if (!fileData || fileData.length === 0) {
+            throw new Error(`Error verificando audio ${i + 1}`);
+          }
+        } catch (error) {
+          console.error(`Error procesando audio ${i + 1}:`, error);
+          throw error;
+        }
+      }
+
+      // Verificar espacio disponible (ejemplo)
+      try {
+        await ffmpeg.writeFile('test.txt', new Uint8Array([1]));
+        await ffmpeg.deleteFile('test.txt');
+      } catch (error) {
+        throw new Error('No hay suficiente espacio en el sistema de archivos virtual');
       }
 
       let filterComplex = '';
 
       // Primero procesamos cada imagen individualmente
-      for (let i = 0; i < updatedSegments.length; i++) {
-        const segment = updatedSegments[i];
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
         const duration = segment.timeEnd - segment.timeStart;
 
         // Escalado y procesamiento básico de cada imagen
@@ -591,15 +746,15 @@ export default function VideoProcessor() {
       }
 
       // Ahora aplicamos las transiciones
-      if (updatedSegments.length > 1) {
+      if (segments.length > 1) {
         // Procesamos el primer segmento
         filterComplex += `[base0]`;
 
         // Aplicamos transiciones entre segmentos consecutivos
-        for (let i = 1; i < updatedSegments.length; i++) {
-          const transition = getTransitionFilter(i, updatedSegments.length);
+        for (let i = 1; i < segments.length; i++) {
+          const transition = getTransitionFilter(i, segments.length);
           // Ajustar el offset para que comience TRANSITION_DURATION segundos antes del final
-          const offset = updatedSegments[i-1].timeEnd - TRANSITION_DURATION;
+          const offset = segments[i-1].timeEnd - TRANSITION_DURATION;
 
           if (i === 1) {
             filterComplex += `[base1]${transition}:duration=${TRANSITION_DURATION}:offset=${offset}[v1];`;
@@ -609,7 +764,7 @@ export default function VideoProcessor() {
         }
 
         // Usamos el último stream como salida final
-        filterComplex += `[v${updatedSegments.length-1}]`;
+        filterComplex += `[v${segments.length-1}]`;
       } else {
         // Si solo hay un segmento, usamos su base directamente
         filterComplex += `[base0]`;
@@ -619,7 +774,7 @@ export default function VideoProcessor() {
       filterComplex += `format=yuv420p[v]`;
 
       // Modificar los argumentos de entrada para incluir el tiempo de transición
-      const inputArgs = updatedSegments.map((segment, i) => {
+      const inputArgs = segments.map((segment, i) => {
         const duration = segment.timeEnd - segment.timeStart;
         return [
           '-loop', '1',
@@ -665,15 +820,15 @@ export default function VideoProcessor() {
       setMessage('Procesando archivos de audio...');
       console.log('🔊 Preparando archivos de audio...');
 
-      for (let i = 0; i < blobs.length; i++) {
-        const arrayBuffer = await blobs[i].arrayBuffer();
+      for (let i = 0; i < audioBlobs.length; i++) {
+        const arrayBuffer = await audioBlobs[i].arrayBuffer();
         await ffmpeg.writeFile(`segment_${i}.mp3`, new Uint8Array(arrayBuffer));
         console.log(`✓ Audio ${i + 1} preparado`);
       }
 
       // Create concat file and merge audio
       console.log('🔄 Combinando archivos de audio...');
-      const concatFile = blobs.map((_, i) => `file 'segment_${i}.mp3'`).join('\n');
+      const concatFile = audioBlobs.map((_, i) => `file 'segment_${i}.mp3'`).join('\n');
       await ffmpeg.writeFile('concat.txt', concatFile);
 
       setMessage('Combinando archivos de audio...');
@@ -695,7 +850,7 @@ export default function VideoProcessor() {
       console.log('✍️ Generando filtros de texto para subtítulos...');
 
       // Asegurarnos de que estamos usando los segmentos actualizados con subSegments
-      const textFilters = updatedSegments.flatMap(segment =>
+      const textFilters = segments.flatMap(segment =>
         segment.subSegments?.map(subSegment => {
           const escapedText = subSegment.text
             .replace(/'/g, "'\\''") // Escapar comillas simples
@@ -760,7 +915,7 @@ export default function VideoProcessor() {
         '-ac', '2',
         '-ar', '44100',
         '-threads', '0',
-        '-t', currentTime.toString(),
+        '-t', totalVideoDuration.toString(),
         '-shortest',
         '-async', '1',
         '-fps_mode', 'vfr',
@@ -772,66 +927,10 @@ export default function VideoProcessor() {
       await ffmpeg.exec(ffmpegArgs);
       console.log('✅ Video base generado correctamente');
 
-      // Modificar la parte donde ejecutamos FFmpeg con el GIF
+      // Si hay tag de suscripción, agregarlo usando la duración total correcta
       if (includeSubscribeTag) {
-        console.log('🎯 Añadiendo tag de suscripción superpuesto al final del video...');
-        try {
-          // Renombrar el video original
-          await ffmpeg.exec(['-i', 'final_output.mp4', '-c', 'copy', 'temp_video.mp4']);
-
-          // Cargar el GIF
-          const subscribeResponse = await fetch('/tags/suscribe.gif');
-          if (!subscribeResponse.ok) {
-            throw new Error(`No se pudo cargar el gif de suscripción. Status: ${subscribeResponse.status}`);
-          }
-          const subscribeData = await subscribeResponse.arrayBuffer();
-          await ffmpeg.writeFile('subscribe.gif', new Uint8Array(subscribeData));
-
-          // Cargar el sonido de click
-          const clickResponse = await fetch('/tags/click.mp3');
-          if (!clickResponse.ok) {
-            throw new Error(`No se pudo cargar el sonido de click. Status: ${clickResponse.status}`);
-          }
-          const clickData = await clickResponse.arrayBuffer();
-          await ffmpeg.writeFile('click.mp3', new Uint8Array(clickData));
-
-          console.log('✅ GIF y sonido preparados');
-          console.log('📊 Duración total del video:', videoDuration, 'segundos');
-
-          // Nuevo enfoque combinando video, GIF y sonido
-          await ffmpeg.exec([
-            '-i', 'temp_video.mp4',
-            '-ignore_loop', '0',
-            '-i', 'subscribe.gif',
-            '-i', 'click.mp3', // Añadir el sonido de click
-            '-filter_complex',
-            `[1:v]scale=525:930,setpts=PTS-STARTPTS+${videoDuration-2}/TB[gif];` +
-            `[0:v][gif]overlay=(W-w)/2:(H-h)/15:enable='between(t,${videoDuration-2},${videoDuration})'[v];` +
-            // Ajustar el timing y volumen del click
-            `[2:a]adelay=${(videoDuration-1)*1000}|${(videoDuration-1)*1000},volume=0.3[click];` +
-            // Mezclar el audio original con el click
-            `[0:a][click]amix=inputs=2:duration=first[a]`,
-            '-map', '[v]',
-            '-map', '[a]',
-            '-t', videoDuration.toString(),
-            '-y',
-            'final_output_with_subscribe.mp4'
-          ]);
-
-          // Reemplazar el video final
-          await ffmpeg.exec([
-            '-i', 'final_output_with_subscribe.mp4',
-            '-c', 'copy',
-            '-y',
-            'final_output.mp4'
-          ]);
-
-          console.log('✅ Tag de suscripción y sonido añadidos correctamente');
-        } catch (error) {
-          console.error('❌ Error al añadir tag de suscripción:', error);
-          console.error('Stack trace:', error.stack);
-          setMessage('Error al añadir la animación de suscripción. Se mantendrá el video original.');
-        }
+        console.log('🎯 Agregando tag de suscripción');
+        await addSubscribeTag(totalVideoDuration);
       }
 
       // Continuar con el código existente para descargar el video...
@@ -847,11 +946,67 @@ export default function VideoProcessor() {
       setMessage('¡Video generado con éxito!');
       setCurrentStep(ProcessStep.COMPLETED);
     } catch (error) {
-      console.error('❌ Error general en generateFinalVideo:', error);
-      console.error('Stack trace:', error.stack);
-      setMessage('Error al generar el video');
+      console.error('Error en generateFinalVideo:', error);
+      setMessage(`Error: ${error.message}`);
+      throw error;
+    } finally {
+      // Limpiar archivos al finalizar
+      await cleanupFFmpegFiles();
       setLoading(false);
     }
+  };
+
+  // Función separada para agregar el tag de suscripción
+  const addSubscribeTag = async (totalDuration: number) => {
+    try {
+      await ffmpeg.exec(['-i', 'final_output.mp4', '-c', 'copy', 'temp_video.mp4']);
+
+      // Cargar recursos
+      await Promise.all([
+        loadResource('subscribe.gif', '/tags/suscribe.gif'),
+        loadResource('click.mp3', '/tags/click.mp3')
+      ]);
+
+      const tagStart = totalDuration - SUBSCRIBE_TAG_DURATION;
+      const clickTime = totalDuration - CLICK_SOUND_OFFSET;
+
+      await ffmpeg.exec([
+        '-i', 'temp_video.mp4',
+        '-ignore_loop', '0',
+        '-i', 'subscribe.gif',
+        '-i', 'click.mp3',
+        '-filter_complex',
+        `[1:v]scale=525:930,setpts=PTS-STARTPTS+${tagStart}/TB[gif];` +
+        `[0:v][gif]overlay=(W-w)/2:(H-h)/15:enable='between(t,${tagStart},${totalDuration})'[v];` +
+        `[2:a]adelay=${clickTime*1000}|${clickTime*1000},volume=0.3[click];` +
+        `[0:a][click]amix=inputs=2:duration=first[a]`,
+        '-map', '[v]',
+        '-map', '[a]',
+        '-t', totalDuration.toString(),
+        '-y',
+        'final_output_with_subscribe.mp4'
+      ]);
+
+      await ffmpeg.exec([
+        '-i', 'final_output_with_subscribe.mp4',
+        '-c', 'copy',
+        '-y',
+        'final_output.mp4'
+      ]);
+    } catch (error) {
+      console.error('❌ Error agregando tag de suscripción:', error);
+      throw error;
+    }
+  };
+
+  // Función auxiliar para cargar recursos
+  const loadResource = async (filename: string, url: string) => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`No se pudo cargar ${filename}. Status: ${response.status}`);
+    }
+    const data = await response.arrayBuffer();
+    await ffmpeg.writeFile(filename, new Uint8Array(data));
   };
 
   const normalizeText = (str: string) => {
@@ -955,6 +1110,8 @@ export default function VideoProcessor() {
 
   const generateImageForSegment = async (visualDescription: string): Promise<string> => {
     try {
+      console.log('🎨 Iniciando generación de imagen para:', visualDescription.substring(0, 50) + '...');
+
       const response = await fetch('/api/tiktok-video/generate-image', {
         method: 'POST',
         headers: {
@@ -964,13 +1121,32 @@ export default function VideoProcessor() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to generate image');
+        throw new Error(`Error en la generación de imagen (status ${response.status}): ${response.statusText}`);
       }
 
       const data = await response.json();
+
+      if (!data.imageUrl) {
+        throw new Error('No se recibió URL de imagen en la respuesta');
+      }
+
+      // Verificar que la imagen es accesible
+      const imageResponse = await fetch(data.imageUrl);
+      if (!imageResponse.ok) {
+        throw new Error(`La imagen generada no es accesible (status ${imageResponse.status})`);
+      }
+
+      console.log('✅ Imagen generada exitosamente:', {
+        prompt: visualDescription.substring(0, 50) + '...',
+        url: data.imageUrl.substring(0, 50) + '...'
+      });
+
       return data.imageUrl;
     } catch (error) {
-      console.error('Error generating image:', error);
+      console.error('❌ Error generando imagen:', {
+        error,
+        prompt: visualDescription.substring(0, 50) + '...'
+      });
       throw error;
     }
   };
@@ -1393,7 +1569,7 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
                       className="absolute top-2 right-2 p-2 bg-white rounded-full shadow-lg hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
                       <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
                       </svg>
                     </button>
                   </div>
