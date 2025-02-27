@@ -877,12 +877,16 @@ export default function VideoProcessor() {
         const musicArrayBuffer = await musicResponse.arrayBuffer();
         await ffmpeg.writeFile('background_music.mp3', new Uint8Array(musicArrayBuffer));
 
-        // Combinar el audio narrado con la música de fondo
+        // Combinar el audio narrado con la música de fondo, extendiendo la duración
         await ffmpeg.exec([
           '-i', 'output.mp3',
           '-i', 'background_music.mp3',
           '-filter_complex',
-          '[0:a]volume=3[voice];[1:a]volume=0.3[music];[voice][music]amix=inputs=2:duration=first[aout]',
+          // Ajustar la duración total para incluir el tiempo extra del último segmento
+          `[0:a]apad=pad_dur=${FINAL_EXTENSION}[voice];` +
+          '[1:a]volume=0.3[music];' +
+          // Usar longest en lugar de first para mantener la duración más larga
+          '[voice][music]amix=inputs=2:duration=longest[aout]',
           '-map', '[aout]',
           'final_audio.mp3'
         ]);
