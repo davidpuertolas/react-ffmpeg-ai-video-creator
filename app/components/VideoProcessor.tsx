@@ -145,6 +145,13 @@ const calculateSegmentTiming = (
   };
 };
 
+interface IntermediateOutputs {
+  rawAudio?: string;  // URL for the raw concatenated audio
+  backgroundMusic?: string; // URL for the background music mix
+  rawVideo?: string;  // URL for the video without audio
+  subtitledVideo?: string; // URL for the video with subtitles before final mix
+}
+
 export default function VideoProcessor() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -170,6 +177,7 @@ export default function VideoProcessor() {
   const [includeSubscribeTag, setIncludeSubscribeTag] = useState(false);
   const [selectedMusic, setSelectedMusic] = useState<BackgroundMusic>(BackgroundMusic.NONE);
   const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
+  const [intermediateOutputs, setIntermediateOutputs] = useState<IntermediateOutputs>({});
 
   // Cargar la fuente globalmente
   useEffect(() => {
@@ -545,11 +553,14 @@ export default function VideoProcessor() {
         'final_output.mp4',
         'temp_video.mp4',
         'concat.txt',
+        'concat_list.txt',
         'mrbeast.ttf',
         'subscribe.gif',
         'click.mp3',
         'background_music.mp3',
-        'final_audio.mp3'
+        'final_audio.mp3',
+        'raw_audio.mp3',
+        'mixed_audio.mp3'
       ];
 
       // También limpiar los archivos de segmentos
@@ -560,24 +571,50 @@ export default function VideoProcessor() {
 
       for (const file of files) {
         try {
-          await ffmpeg.deleteFile(file);
+          const exists = await ffmpeg.readFile(file).then(() => true).catch(() => false);
+          if (exists) {
+            await ffmpeg.deleteFile(file);
+          }
         } catch (error) {
-          console.log(`No se pudo eliminar ${file}:`, error);
+          // Ignorar errores de archivos que no existen
         }
       }
     } catch (error) {
-      console.error('Error limpiando archivos:', error);
+      console.error('Error en cleanupFFmpegFiles:', error);
+      // No lanzar el error para permitir que el proceso continúe
+    }
+  };
+
+  // Añadir una función para el logging periódico
+  const startPeriodicLogging = () => {
+    try {
+      return setInterval(() => {
+        console.log('⚙️ Ejecutando FFmpeg...');
+      }, 6000);
+    } catch (error) {
+      console.error('Error iniciando logging:', error);
+      return null;
     }
   };
 
   const generateFinalVideo = async () => {
+    // Declarar loggingInterval fuera del try para que sea accesible en el finally
+    let loggingInterval: NodeJS.Timeout | null = null;
+
     try {
       // Limpiar archivos anteriores antes de empezar
       await cleanupFFmpegFiles();
 
+      // Iniciar el logging periódico
+      loggingInterval = startPeriodicLogging();
+
       setLoading(true);
       setCurrentStep(ProcessStep.GENERATING);
-      console.log('🎬 Comenzando proceso de generación');
+
+      // Asegurarnos de que ffmpeg está listo
+      if (!ffmpeg) {
+        throw new Error('FFmpeg no está inicializado');
+      }
 
       let totalVideoDuration = 0;
       let totalAudioDuration = 0;
@@ -646,167 +683,56 @@ export default function VideoProcessor() {
       setProgress(45);
       setMessage('Preparando imágenes...');
 
-      for (let i = 0; i < segments.length; i++) {
-        const segment = segments[i];
-        if (!segment.imageUrl) {
-          throw new Error(`No hay URL de imagen para el segmento ${i + 1}`);
-        }
-
-        try {
-          console.log(`📥 Procesando imagen ${i + 1}/${segments.length}`);
-          const imageResponse = await fetch(segment.imageUrl);
-          if (!imageResponse.ok) {
-            throw new Error(`Error descargando imagen ${i + 1}: ${imageResponse.status}`);
-          }
-
-          const imageData = await imageResponse.arrayBuffer();
-          const filename = `image_${i}.jpg`;
-
-          // Verificar que el archivo no existe antes de escribir
-          try {
-            await ffmpeg.deleteFile(filename);
-          } catch (error) {
-            // Ignorar error si el archivo no existe
-          }
-
-          // Escribir el archivo
-          await ffmpeg.writeFile(filename, new Uint8Array(imageData));
-
-          // Verificar que se escribió correctamente
-          const fileData = await ffmpeg.readFile(filename);
-          if (!fileData || fileData.length === 0) {
-            throw new Error(`Error verificando imagen ${i + 1}`);
-          }
-        } catch (error) {
-          console.error(`Error procesando imagen ${i + 1}:`, error);
-          throw error;
-        }
-      }
-
-      // Modificar el procesamiento de audio
-      for (let i = 0; i < audioBlobs.length; i++) {
-        try {
-          const filename = `segment_${i}.mp3`;
-          const arrayBuffer = await audioBlobs[i].arrayBuffer();
-
-          // Limpiar archivo existente
-          try {
-            await ffmpeg.deleteFile(filename);
-          } catch (error) {
-            // Ignorar error si el archivo no existe
-          }
-
-          await ffmpeg.writeFile(filename, new Uint8Array(arrayBuffer));
-
-          // Verificar archivo
-          const fileData = await ffmpeg.readFile(filename);
-          if (!fileData || fileData.length === 0) {
-            throw new Error(`Error verificando audio ${i + 1}`);
-          }
-        } catch (error) {
-          console.error(`Error procesando audio ${i + 1}:`, error);
-          throw error;
-        }
-      }
-
-      // Verificar espacio disponible (ejemplo)
       try {
-        await ffmpeg.writeFile('test.txt', new Uint8Array([1]));
-        await ffmpeg.deleteFile('test.txt');
-      } catch (error) {
-        throw new Error('No hay suficiente espacio en el sistema de archivos virtual');
-      }
-
-      let filterComplex = '';
-
-      // Primero procesamos cada imagen individualmente
-      for (let i = 0; i < segments.length; i++) {
-        const segment = segments[i];
-        const duration = segment.timeEnd - segment.timeStart;
-
-        // Escalado y procesamiento básico de cada imagen
-        filterComplex += `[${i}:v]scale=540:960:force_original_aspect_ratio=increase,`;
-        filterComplex += 'crop=540:960,';
-        filterComplex += 'fps=30,';
-
-        // Aplicamos el efecto de zoom
-        filterComplex += `zoompan=z='min(zoom+0.0015,1.5)':d=${Math.round(duration*30)}:s=540x960:fps=30,`;
-
-        // Fade in para el primer segmento
-        if (i === 0) {
-          filterComplex += 'fade=in:st=0:d=1.5,';
-        }
-
-        // Establecemos la duración exacta del segmento
-        filterComplex += `trim=0:${duration},`;
-        filterComplex += 'setpts=PTS-STARTPTS';
-
-        // Nombramos el output stream
-        filterComplex += `[base${i}];`;
-      }
-
-      // Ahora aplicamos las transiciones
-      if (segments.length > 1) {
-        // Procesamos el primer segmento
-        filterComplex += `[base0]`;
-
-        // Aplicamos transiciones entre segmentos consecutivos
-        for (let i = 1; i < segments.length; i++) {
-          const transition = getTransitionFilter(i, segments.length);
-          // Ajustar el offset para que comience TRANSITION_DURATION segundos antes del final
-          const offset = segments[i-1].timeEnd - TRANSITION_DURATION;
-
-          if (i === 1) {
-            filterComplex += `[base1]${transition}:duration=${TRANSITION_DURATION}:offset=${offset}[v1];`;
-          } else {
-            filterComplex += `[v${i-1}][base${i}]${transition}:duration=${TRANSITION_DURATION}:offset=${offset}[v${i}];`;
+        // Descargar y guardar todas las imágenes
+        for (let i = 0; i < segments.length; i++) {
+          const imageUrl = segments[i].imageUrl;
+          if (!imageUrl) {
+            throw new Error(`No hay imagen disponible para el segmento ${i + 1}`);
           }
+
+          const imageResponse = await fetch(imageUrl);
+          const imageData = await imageResponse.arrayBuffer();
+          await ffmpeg.writeFile(`image_${i}.jpg`, new Uint8Array(imageData));
         }
 
-        // Usamos el último stream como salida final
-        filterComplex += `[v${segments.length-1}]`;
-      } else {
-        // Si solo hay un segmento, usamos su base directamente
-        filterComplex += `[base0]`;
+        // Crear un archivo de concatenación para las imágenes con formato correcto
+        let concatContent = '';
+        for (let i = 0; i < segments.length; i++) {
+          const duration = segments[i].timeEnd - segments[i].timeStart;
+          // Usar formato absoluto para las rutas y escapar correctamente
+          concatContent += `file 'image_${i}.jpg'\nduration ${duration.toFixed(3)}\n`;
+        }
+        // Añadir la última entrada sin duración (requerido por FFmpeg)
+        concatContent += `file 'image_${segments.length - 1}.jpg'`;
+
+        // Escribir el archivo de concatenación
+        await ffmpeg.writeFile('concat_list.txt', concatContent);
+
+        // Generar el video base usando el demuxer concat con opciones más específicas
+        await ffmpeg.exec([
+          '-f', 'concat',
+          '-safe', '0',
+          '-i', 'concat_list.txt',
+          '-vsync', 'vfr',  // Variable frame rate para mejor manejo de duraciones
+          '-vf', 'fps=30,scale=540:960:force_original_aspect_ratio=increase,crop=540:960,fade=in:0:30',  // Añadido fade=in:0:30 para un fade de 1 segundo
+          '-c:v', 'libx264',
+          '-pix_fmt', 'yuv420p',
+          '-preset', 'ultrafast',
+          '-y',
+          'input.mp4'
+        ]);
+
+        // Verificar que el video se generó correctamente
+        const videoCheck = await ffmpeg.readFile('input.mp4');
+        if (!videoCheck || videoCheck.length === 0) {
+          throw new Error('El video base no se generó correctamente');
+        }
+
+      } catch (error) {
+        console.error('Error procesando imágenes:', error);
+        throw new Error('Error al procesar las imágenes de fondo');
       }
-
-      // Configuración final del video
-      filterComplex += `format=yuv420p[v]`;
-
-      // Modificar los argumentos de entrada para incluir el tiempo de transición
-      const inputArgs = segments.map((segment, i) => {
-        const duration = segment.timeEnd - segment.timeStart;
-        return [
-          '-loop', '1',
-          '-t', `${duration}`, // Ya incluye el tiempo de transición desde el cálculo anterior
-          '-i', `image_${i}.jpg`
-        ];
-      }).flat();
-
-      // Generar el video base con los nuevos argumentos
-      await ffmpeg.exec([
-        ...inputArgs,
-        '-filter_complex', filterComplex,
-        '-map', '[v]',
-        '-fps_mode', 'cfr',
-        '-pix_fmt', 'yuv420p',
-        '-r', '30',
-        '-preset', 'ultrafast',
-        '-tune', 'fastdecode',
-        '-threads', '0',
-        '-c:v', 'libx264',
-        '-crf', '23',
-        '-movflags', '+faststart',
-        'input.mp4'
-      ]);
-
-      // Verificar que el archivo se creó correctamente
-      const fileExists = await ffmpeg.readFile('input.mp4').then(() => true).catch(() => false);
-      if (!fileExists) {
-        throw new Error('Error generando el video base');
-      }
-
-      console.log('✅ Video base generado a partir de imágenes');
 
       // Cargar la fuente ANTES de preparar los filtros de texto
       console.log('🎨 Cargando fuente...');
@@ -837,7 +763,7 @@ export default function VideoProcessor() {
         '-safe', '0',
         '-i', 'concat.txt',
         '-c', 'copy',
-        'output.mp3'
+        'raw_audio.mp3'
       ]);
       console.log('✅ Audio combinado correctamente');
 
@@ -879,23 +805,21 @@ export default function VideoProcessor() {
 
         // Combinar el audio narrado con la música de fondo, extendiendo la duración
         await ffmpeg.exec([
-          '-i', 'output.mp3',
+          '-i', 'raw_audio.mp3',
           '-i', 'background_music.mp3',
           '-filter_complex',
-          // Ajustar la duración total para incluir el tiempo extra del último segmento
           `[0:a]apad=pad_dur=${FINAL_EXTENSION}[voice];` +
           '[1:a]volume=0.3[music];' +
-          // Usar longest en lugar de first para mantener la duración más larga
           '[voice][music]amix=inputs=2:duration=longest[aout]',
           '-map', '[aout]',
-          'final_audio.mp3'
+          'mixed_audio.mp3'
         ]);
 
         // Renombrar el audio final
         await ffmpeg.exec([
-          '-i', 'final_audio.mp3',
+          '-i', 'mixed_audio.mp3',
           '-c', 'copy',
-          'output.mp3'
+          'final_audio.mp3'
         ]);
       }
 
@@ -905,7 +829,7 @@ export default function VideoProcessor() {
 
       let ffmpegArgs = [
         '-i', 'input.mp4',
-        '-i', 'output.mp3',
+        '-i', 'final_audio.mp3',
         '-filter_complex',
         `[0:v]${finalFilter}[v]`,
         '-map', '[v]',
@@ -943,18 +867,66 @@ export default function VideoProcessor() {
       const videoUrl = URL.createObjectURL(blob);
       setGeneratedVideoUrl(videoUrl);
       setFinalVideoBlob(blob);
-      //downloadFile(blob, 'video_final.mp4'); //auto download
 
-      console.log('🎉 ¡Proceso completado con éxito!');
+      // After processing audio segments, create a URL for the raw audio
+      await ffmpeg.exec([
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'concat.txt',
+        '-c', 'copy',
+        'raw_audio.mp3'
+      ]);
+
+      const rawAudioData = await ffmpeg.readFile('raw_audio.mp3');
+      const rawAudioUrl = URL.createObjectURL(new Blob([rawAudioData], { type: 'audio/mp3' }));
+      setIntermediateOutputs(prev => ({ ...prev, rawAudio: rawAudioUrl }));
+
+      // If background music is selected, create a URL for the mixed audio
+      if (selectedMusic !== BackgroundMusic.NONE) {
+        await ffmpeg.exec([
+          '-i', 'raw_audio.mp3',
+          '-i', 'background_music.mp3',
+          '-filter_complex',
+          `[0:a]apad=pad_dur=${FINAL_EXTENSION}[voice];` +
+          '[1:a]volume=0.3[music];' +
+          '[voice][music]amix=inputs=2:duration=longest[aout]',
+          '-map', '[aout]',
+          'mixed_audio.mp3'
+        ]);
+
+        const mixedAudioData = await ffmpeg.readFile('mixed_audio.mp3');
+        const mixedAudioUrl = URL.createObjectURL(new Blob([mixedAudioData], { type: 'audio/mp3' }));
+        setIntermediateOutputs(prev => ({ ...prev, backgroundMusic: mixedAudioUrl }));
+      }
+
+      // After generating the base video, create a URL for it
+      const rawVideoData = await ffmpeg.readFile('input.mp4');
+      const rawVideoUrl = URL.createObjectURL(new Blob([rawVideoData], { type: 'video/mp4' }));
+      setIntermediateOutputs(prev => ({ ...prev, rawVideo: rawVideoUrl }));
+
+      // After adding subtitles but before final mix, create a URL
+      const subtitledVideoData = await ffmpeg.readFile('temp_video.mp4');
+      const subtitledVideoUrl = URL.createObjectURL(new Blob([subtitledVideoData], { type: 'video/mp4' }));
+      setIntermediateOutputs(prev => ({ ...prev, subtitledVideo: subtitledVideoUrl }));
+
+      clearInterval(loggingInterval);
       setProgress(100);
       setMessage('¡Video generado con éxito!');
       setCurrentStep(ProcessStep.COMPLETED);
+
+      return {
+        finalVideo: videoUrl,
+        intermediateOutputs
+      };
     } catch (error) {
       console.error('Error en generateFinalVideo:', error);
       setMessage(`Error: ${error.message}`);
       throw error;
     } finally {
-      // Limpiar archivos al finalizar
+      // Limpiar el intervalo si existe
+      if (loggingInterval) {
+        clearInterval(loggingInterval);
+      }
       await cleanupFFmpegFiles();
       setLoading(false);
     }
@@ -1434,6 +1406,126 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
     }
   };
 
+  // Modify the completed step UI to show intermediate outputs
+  const renderCompletedStep = () => (
+    <div className="space-y-6">
+      <div className="bg-green-50 border border-green-200 rounded-lg p-6">
+        <div className="flex items-center space-x-3 mb-4">
+          <div className="flex-shrink-0">
+            <svg className="h-6 w-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-medium text-green-800">¡Video Generado con Éxito!</h3>
+        </div>
+        <p className="text-sm text-green-600 mb-4">
+          Tu video ha sido generado y descargado exitosamente.
+        </p>
+
+        {/* Background Images Used */}
+        <div className="mt-6">
+          <h4 className="text-lg font-medium text-gray-900 mb-4">Imágenes de Fondo Utilizadas</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            {segments.map((segment, index) => (
+              <div key={index} className="bg-white rounded-lg shadow overflow-hidden">
+                <div className="aspect-[9/16] relative">
+                  <img
+                    src={segment.imageUrl}
+                    alt={`Fondo ${index + 1}`}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white p-2">
+                    <span className="text-sm font-medium">Segmento {index + 1}</span>
+                  </div>
+                </div>
+                <div className="p-3">
+                  <p className="text-xs text-gray-500 line-clamp-2">
+                    {segment.visualDescription}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Final Video */}
+        {generatedVideoUrl && (
+          <div className="mt-4">
+            <h4 className="text-lg font-medium text-gray-900 mb-4">Video Final</h4>
+            <div className="relative aspect-[9/16] w-full max-w-sm mx-auto bg-black rounded-lg overflow-hidden">
+              <video controls src={generatedVideoUrl} className="w-full h-full" />
+            </div>
+          </div>
+        )}
+
+        {/* Intermediate Outputs */}
+        <div className="mt-6 space-y-4">
+          <h4 className="text-lg font-medium text-gray-900">Archivos Intermedios</h4>
+
+          {intermediateOutputs.rawAudio && (
+            <div className="p-4 bg-white rounded-lg shadow">
+              <h5 className="font-medium text-gray-700 mb-2">Audio Raw (Sin música)</h5>
+              <audio controls src={intermediateOutputs.rawAudio} className="w-full" />
+              <button
+                onClick={() => downloadFile(intermediateOutputs.rawAudio, 'raw_audio.mp3')}
+                className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+              >
+                Descargar Audio Raw
+              </button>
+            </div>
+          )}
+
+          {intermediateOutputs.backgroundMusic && (
+            <div className="p-4 bg-white rounded-lg shadow">
+              <h5 className="font-medium text-gray-700 mb-2">Audio con Música de Fondo</h5>
+              <audio controls src={intermediateOutputs.backgroundMusic} className="w-full" />
+              <button
+                onClick={() => downloadFile(intermediateOutputs.backgroundMusic, 'mixed_audio.mp3')}
+                className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+              >
+                Descargar Audio con Música
+              </button>
+            </div>
+          )}
+
+          {intermediateOutputs.rawVideo && (
+            <div className="p-4 bg-white rounded-lg shadow">
+              <h5 className="font-medium text-gray-700 mb-2">Video Raw (Sin subtítulos)</h5>
+              <video controls src={intermediateOutputs.rawVideo} className="w-full max-w-sm mx-auto" />
+              <button
+                onClick={() => downloadFile(intermediateOutputs.rawVideo, 'raw_video.mp4')}
+                className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+              >
+                Descargar Video Raw
+              </button>
+            </div>
+          )}
+
+          {intermediateOutputs.subtitledVideo && (
+            <div className="p-4 bg-white rounded-lg shadow">
+              <h5 className="font-medium text-gray-700 mb-2">Video con Subtítulos (Sin música)</h5>
+              <video controls src={intermediateOutputs.subtitledVideo} className="w-full max-w-sm mx-auto" />
+              <button
+                onClick={() => downloadFile(intermediateOutputs.subtitledVideo, 'subtitled_video.mp4')}
+                className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+              >
+                Descargar Video con Subtítulos
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Final Video Download Button */}
+        <button
+          onClick={() => finalVideoBlob && downloadFile(finalVideoBlob, 'video_final.mp4')}
+          className="mt-6 w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+        >
+          Descargar Video Final
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-8">
       {/* Steps Indicator */}
@@ -1691,48 +1783,7 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
           </div>
         )}
 
-        {currentStep === ProcessStep.COMPLETED && (
-          <div className="space-y-6">
-            <div className="bg-green-50 border border-green-200 rounded-lg p-6">
-              <div className="flex items-center space-x-3 mb-4">
-                <div className="flex-shrink-0">
-                  <svg className="h-6 w-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-medium text-green-800">¡Video Generado con Éxito!</h3>
-              </div>
-              <p className="text-sm text-green-600 mb-4">
-                Tu video ha sido generado y descargado exitosamente.
-              </p>
-
-              {/* Video Player */}
-              {generatedVideoUrl && (
-                <div className="mt-4">
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Preview del Video:</h4>
-                  <div className="relative aspect-[9/16] w-full max-w-sm mx-auto bg-black rounded-lg overflow-hidden">
-                    <video
-                      className="w-full h-full"
-                      controls
-                      src={generatedVideoUrl}
-                      poster="/thumbnail-placeholder.jpg"
-                    >
-                      Tu navegador no soporta la reproducción de video.
-                    </video>
-                  </div>
-                </div>
-              )}
-
-              {/* Botón de descarga */}
-              <button
-                onClick={() => finalVideoBlob && downloadFile(finalVideoBlob, 'video_final.mp4')}
-                className="mt-4 w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-              >
-                Descargar Video
-              </button>
-            </div>
-          </div>
-        )}
+        {currentStep === ProcessStep.COMPLETED && renderCompletedStep()}
       </div>
 
       {/* Modal para editar imagen */}
