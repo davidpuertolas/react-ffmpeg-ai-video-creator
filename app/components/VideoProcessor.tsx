@@ -97,6 +97,7 @@ const FADE_DURATION = 0.2;       // Duración de los fades de subtítulos
 const FINAL_EXTENSION = 2;       // Extensión del último segmento
 const SUBSCRIBE_TAG_DURATION = 2; // Duración del tag de suscripción
 const CLICK_SOUND_OFFSET = 1;    // Cuándo suena el click antes del final
+const FADE_IN_DURATION = 0.5; // Duración del fade in en segundos
 
 interface SegmentTiming {
   audioStart: number;
@@ -131,6 +132,10 @@ interface IntermediateOutputs {
   rawVideo?: string;  // URL for the video without audio
   subtitledVideo?: string; // URL for the video with subtitles before final mix
 }
+
+// Añadir después de las constantes existentes
+const generateImageEffect = (duration: number) =>
+  `scale=540:960:force_original_aspect_ratio=increase,crop=540:960,zoompan=z='min(1+(on/${duration*30})*0.15,1.15)':x='if(lt(on,1),iw/2-(iw/zoom/2),max(0,iw/2-(iw/zoom/2)-(on/${duration*30})*100))':y='if(lt(on,1),ih/2-(ih/zoom/2),max(0,ih/2-(ih/zoom/2)-(on/${duration*30})*100))':d=${duration*30}:s=540x960`;
 
 export default function VideoProcessor() {
   const [loading, setLoading] = useState(false);
@@ -534,6 +539,7 @@ export default function VideoProcessor() {
         'temp_video.mp4',
         'concat.txt',
         'concat_list.txt',
+        'concat_videos.txt',
         'mrbeast.ttf',
         'subscribe.gif',
         'click.mp3',
@@ -547,6 +553,7 @@ export default function VideoProcessor() {
       for (let i = 0; i < segments.length; i++) {
         files.push(`image_${i}.jpg`);
         files.push(`segment_${i}.mp3`);
+        files.push(`processed_${i}.mp4`);
       }
 
       for (const file of files) {
@@ -561,7 +568,6 @@ export default function VideoProcessor() {
       }
     } catch (error) {
       console.error('Error en cleanupFFmpegFiles:', error);
-      // No lanzar el error para permitir que el proceso continúe
     }
   };
 
@@ -674,31 +680,36 @@ export default function VideoProcessor() {
           const imageResponse = await fetch(imageUrl);
           const imageData = await imageResponse.arrayBuffer();
           await ffmpeg.writeFile(`image_${i}.jpg`, new Uint8Array(imageData));
+
+          // Procesar cada imagen individualmente
+          const duration = segments[i].timeEnd - segments[i].timeStart;
+
+          // Generar video para cada imagen con el efecto
+          await ffmpeg.exec([
+            '-i', `image_${i}.jpg`,
+            '-vf', `fps=30,${generateImageEffect(duration)}`,
+            '-t', duration.toString(),
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'ultrafast',
+            '-y',
+            `processed_${i}.mp4`
+          ]);
         }
 
-        // Crear un archivo de concatenación para las imágenes con formato correcto
+        // Crear archivo de concatenación para los videos procesados
         let concatContent = '';
         for (let i = 0; i < segments.length; i++) {
-          const duration = segments[i].timeEnd - segments[i].timeStart;
-          // Usar formato absoluto para las rutas y escapar correctamente
-          concatContent += `file 'image_${i}.jpg'\nduration ${duration.toFixed(3)}\n`;
+          concatContent += `file 'processed_${i}.mp4'\n`;
         }
-        // Añadir la última entrada sin duración (requerido por FFmpeg)
-        concatContent += `file 'image_${segments.length - 1}.jpg'`;
+        await ffmpeg.writeFile('concat_videos.txt', concatContent);
 
-        // Escribir el archivo de concatenación
-        await ffmpeg.writeFile('concat_list.txt', concatContent);
-
-        // Generar el video base usando el demuxer concat con opciones más específicas
+        // Concatenar todos los videos procesados
         await ffmpeg.exec([
           '-f', 'concat',
           '-safe', '0',
-          '-i', 'concat_list.txt',
-          '-vsync', 'vfr',  // Variable frame rate para mejor manejo de duraciones
-          '-vf', 'fps=30,scale=540:960:force_original_aspect_ratio=increase,crop=540:960,fade=in:0:30',  // Añadido fade=in:0:30 para un fade de 1 segundo
-          '-c:v', 'libx264',
-          '-pix_fmt', 'yuv420p',
-          '-preset', 'ultrafast',
+          '-i', 'concat_videos.txt',
+          '-c', 'copy',
           '-y',
           'input.mp4'
         ]);
@@ -811,7 +822,7 @@ export default function VideoProcessor() {
         '-i', 'input.mp4',
         '-i', 'final_audio.mp3',
         '-filter_complex',
-        `[0:v]${finalFilter}[v]`,
+        `[0:v]fade=t=in:st=0:d=${FADE_IN_DURATION},${finalFilter}[v]`, // Añadir fade in aquí
         '-map', '[v]',
         '-map', '1:a:0',
         '-c:v', 'libx264',
