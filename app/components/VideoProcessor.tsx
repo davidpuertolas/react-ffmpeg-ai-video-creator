@@ -63,29 +63,9 @@ const subtitleStyles = [
 
 const transitionTypes = [
   {
-    name: 'Fade',
-    value: 'fade',
-    description: 'Fundido suave entre imágenes'
-  },
-  {
-    name: 'Slide Left',
-    value: 'slideLeft',
-    description: 'Deslizamiento hacia la izquierda'
-  },
-  {
-    name: 'Slide Right',
-    value: 'slideRight',
-    description: 'Deslizamiento hacia la derecha'
-  },
-  {
     name: 'Zoom Out',
     value: 'zoomOut',
     description: 'Efecto de círculo cerrándose'
-  },
-  {
-    name: 'Zoom In',
-    value: 'zoomIn',
-    description: 'Efecto de círculo abriéndose'
   }
 ];
 
