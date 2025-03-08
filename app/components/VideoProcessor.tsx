@@ -63,9 +63,29 @@ const subtitleStyles = [
 
 const transitionTypes = [
   {
+    name: 'Fade',
+    value: 'fade',
+    description: 'Fundido suave entre imágenes'
+  },
+  {
+    name: 'Slide Left',
+    value: 'slideleft',  // Cambiado de 'slideLeft' a 'slideleft'
+    description: 'Deslizamiento hacia la izquierda'
+  },
+  {
+    name: 'Slide Right',
+    value: 'slideright',  // Cambiado de 'slideRight' a 'slideright'
+    description: 'Deslizamiento hacia la derecha'
+  },
+  {
     name: 'Zoom Out',
-    value: 'zoomOut',
+    value: 'circleclose',  // Cambiado de 'zoomOut' a 'circleclose'
     description: 'Efecto de círculo cerrándose'
+  },
+  {
+    name: 'Zoom In',
+    value: 'circleopen',  // Cambiado de 'zoomIn' a 'circleopen'
+    description: 'Efecto de círculo abriéndose'
   }
 ];
 
@@ -512,21 +532,8 @@ export default function VideoProcessor() {
   };
 
   const getTransitionFilter = (index: number, totalSegments: number) => {
-    switch (selectedTransition.value) {
-      case 'slideLeft':
-        return 'xfade=transition=slideleft';
-      case 'slideRight':
-        return 'xfade=transition=slideright';
-      case 'zoomOut':
-        // Usar transiciones más compatibles para zoom
-        return 'xfade=transition=circleclose';
-      case 'zoomIn':
-        // Usar transiciones más compatibles para zoom
-        return 'xfade=transition=circleopen';
-      case 'fade':
-      default:
-        return 'xfade=transition=fade';
-    }
+    // Ya no necesitamos switch, usamos directamente el valor
+    return `xfade=transition=${selectedTransition.value}:duration=${TRANSITION_DURATION}`;
   };
 
   // Añadir una función de utilidad para limpiar el sistema de archivos
@@ -697,22 +704,55 @@ export default function VideoProcessor() {
           ]);
         }
 
-        // Crear archivo de concatenación para los videos procesados
-        let concatContent = '';
-        for (let i = 0; i < segments.length; i++) {
-          concatContent += `file 'processed_${i}.mp4'\n`;
-        }
-        await ffmpeg.writeFile('concat_videos.txt', concatContent);
+        // Si hay más de un segmento, aplicar transiciones
+        if (segments.length > 1) {
+          console.log('🔄 Aplicando transiciones entre segmentos...');
 
-        // Concatenar todos los videos procesados
-        await ffmpeg.exec([
-          '-f', 'concat',
-          '-safe', '0',
-          '-i', 'concat_videos.txt',
-          '-c', 'copy',
-          '-y',
-          'input.mp4'
-        ]);
+          // Crear un archivo temporal para el resultado
+          let currentInput = 'processed_0.mp4';
+
+          for (let i = 1; i < segments.length; i++) {
+            const prevDuration = segments[i-1].timeEnd - segments[i-1].timeStart;
+
+            // Aplicar transición entre el video actual y el siguiente segmento
+            await ffmpeg.exec([
+              '-i', currentInput,
+              '-i', `processed_${i}.mp4`,
+              '-filter_complex',
+              `[0:v][1:v]xfade=transition=${selectedTransition.value}:duration=${TRANSITION_DURATION}:offset=${prevDuration-TRANSITION_DURATION}[outv]`,
+              '-map', '[outv]',
+              '-c:v', 'libx264',
+              '-pix_fmt', 'yuv420p',
+              '-preset', 'ultrafast',
+              '-y',
+              `temp_output_${i}.mp4`
+            ]);
+
+            // El resultado se convierte en la entrada para la siguiente iteración
+            currentInput = `temp_output_${i}.mp4`;
+          }
+
+          // Copiar el resultado final a input.mp4
+          await ffmpeg.exec([
+            '-i', currentInput,
+            '-c', 'copy',
+            '-y',
+            'input.mp4'
+          ]);
+
+          // Limpiar archivos temporales
+          for (let i = 1; i < segments.length; i++) {
+            await ffmpeg.deleteFile(`temp_output_${i}.mp4`);
+          }
+        } else {
+          // Si solo hay un segmento, no necesitamos transiciones
+          await ffmpeg.exec([
+            '-i', 'processed_0.mp4',
+            '-c', 'copy',
+            '-y',
+            'input.mp4'
+          ]);
+        }
 
         // Verificar que el video se generó correctamente
         const videoCheck = await ffmpeg.readFile('input.mp4');
