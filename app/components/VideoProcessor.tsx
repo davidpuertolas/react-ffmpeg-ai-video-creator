@@ -34,6 +34,25 @@ enum BackgroundMusic {
   TENSE = 'tense'
 }
 
+// Simplificar a solo dos opciones: con o sin transición
+enum TransitionType {
+  NONE = 'none',
+  FADE = 'fade'
+}
+
+const transitionOptions = [
+  {
+    value: TransitionType.NONE,
+    name: 'Sin transición',
+    description: 'Cambio directo entre escenas'
+  },
+  {
+    value: TransitionType.FADE,
+    name: 'Fade',
+    description: 'Desvanecimiento suave entre escenas'
+  }
+];
+
 const subtitleStyles = [
   {
     name: 'Classic',
@@ -58,34 +77,6 @@ const subtitleStyles = [
     splitColors: true,
     secondLineColor: 'yellow',
     y: '(h-text_h)/2-30', // Centrado vertical, ajustado para las dos líneas
-  }
-];
-
-const transitionTypes = [
-  {
-    name: 'Fade',
-    value: 'fade',
-    description: 'Fundido suave entre imágenes'
-  },
-  {
-    name: 'Slide Left',
-    value: 'slideleft',  // Cambiado de 'slideLeft' a 'slideleft'
-    description: 'Deslizamiento hacia la izquierda'
-  },
-  {
-    name: 'Slide Right',
-    value: 'slideright',  // Cambiado de 'slideRight' a 'slideright'
-    description: 'Deslizamiento hacia la derecha'
-  },
-  {
-    name: 'Zoom Out',
-    value: 'circleclose',  // Cambiado de 'zoomOut' a 'circleclose'
-    description: 'Efecto de círculo cerrándose'
-  },
-  {
-    name: 'Zoom In',
-    value: 'circleopen',  // Cambiado de 'zoomIn' a 'circleopen'
-    description: 'Efecto de círculo abriéndose'
   }
 ];
 
@@ -178,11 +169,12 @@ export default function VideoProcessor() {
   const [selectedSegmentIndex, setSelectedSegmentIndex] = useState<number | null>(null);
   const [customImagePrompt, setCustomImagePrompt] = useState('');
   const [isRegenerating, setIsRegenerating] = useState(false);
-  const [selectedTransition, setSelectedTransition] = useState(transitionTypes[0]);
   const [includeSubscribeTag, setIncludeSubscribeTag] = useState(false);
   const [selectedMusic, setSelectedMusic] = useState<BackgroundMusic>(BackgroundMusic.NONE);
   const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
   const [intermediateOutputs, setIntermediateOutputs] = useState<IntermediateOutputs>({});
+  // Add state for transition type
+  const [selectedTransition, setSelectedTransition] = useState<TransitionType>(TransitionType.FADE);
 
   // Cargar la fuente globalmente
   useEffect(() => {
@@ -531,11 +523,6 @@ export default function VideoProcessor() {
     return effects[index % effects.length].replace('$duration', duration.toString());
   };
 
-  const getTransitionFilter = (index: number, totalSegments: number) => {
-    // Ya no necesitamos switch, usamos directamente el valor
-    return `xfade=transition=${selectedTransition.value}:duration=${TRANSITION_DURATION}`;
-  };
-
   // Añadir una función de utilidad para limpiar el sistema de archivos
   const cleanupFFmpegFiles = async () => {
     try {
@@ -547,6 +534,7 @@ export default function VideoProcessor() {
         'concat.txt',
         'concat_list.txt',
         'concat_videos.txt',
+        'concat_faded.txt',  // Add this
         'mrbeast.ttf',
         'subscribe.gif',
         'click.mp3',
@@ -561,6 +549,7 @@ export default function VideoProcessor() {
         files.push(`image_${i}.jpg`);
         files.push(`segment_${i}.mp3`);
         files.push(`processed_${i}.mp4`);
+        files.push(`faded_${i}.mp4`);  // Add this
       }
 
       for (const file of files) {
@@ -590,6 +579,95 @@ export default function VideoProcessor() {
     }
   };
 
+  // Update the createVideoWithCrossfade function to handle multiple segments properly
+  const createVideoWithCrossfade = async () => {
+    try {
+      console.log(`🎬 Creando video con transición: ${selectedTransition}`);
+      console.log(`📊 Número de segmentos: ${segments.length}`);
+
+      // If no transition is selected, just concatenate the videos directly
+      if (selectedTransition === TransitionType.NONE) {
+        const concatList = segments.map((_, i) => `file 'processed_${i}.mp4'`).join('\n');
+        await ffmpeg.writeFile('concat_videos.txt', concatList);
+
+        await ffmpeg.exec([
+          '-f', 'concat',
+          '-safe', '0',
+          '-i', 'concat_videos.txt',
+          '-c', 'copy',
+          '-y',
+          'input.mp4'
+        ]);
+
+        console.log('✅ Video sin transiciones generado correctamente');
+        return;
+      }
+
+      // For fade transitions, we'll use a different approach for multiple segments
+      for (let i = 0; i < segments.length; i++) {
+        const duration = segments[i].timeEnd - segments[i].timeStart;
+        let filters = [];
+
+        // Add fade in for all segments except the first one
+        if (i > 0) {
+          filters.push(`fade=t=in:st=0:d=${TRANSITION_DURATION}`);
+        }
+
+        // Add fade out for all segments except the last one
+        if (i < segments.length - 1) {
+          const fadeOutStart = Math.max(0, duration - TRANSITION_DURATION);
+          filters.push(`fade=t=out:st=${fadeOutStart}:d=${TRANSITION_DURATION}`);
+        }
+
+        // Apply filters if we have any
+        if (filters.length > 0) {
+          await ffmpeg.exec([
+            '-i', `processed_${i}.mp4`,
+            '-vf', filters.join(','),
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'ultrafast',
+            '-y',
+            `faded_${i}.mp4`
+          ]);
+        } else {
+          // Just copy the file if no filters
+          await ffmpeg.exec([
+            '-i', `processed_${i}.mp4`,
+            '-c', 'copy',
+            '-y',
+            `faded_${i}.mp4`
+          ]);
+        }
+
+        console.log(`🔄 Procesando segmento ${i+1}/${segments.length}:`, {
+          duration,
+          filters: filters.join(',') || 'ninguno'
+        });
+      }
+
+      // Now create a concat file with all the faded segments
+      const concatList = segments.map((_, i) => `file 'faded_${i}.mp4'`).join('\n');
+      await ffmpeg.writeFile('concat_faded.txt', concatList);
+
+      // Concatenate all the faded segments
+      await ffmpeg.exec([
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'concat_faded.txt',
+        '-c', 'copy',
+        '-y',
+        'input.mp4'
+      ]);
+
+      console.log('✅ Video con transiciones generado correctamente');
+    } catch (error) {
+      console.error('Error creando video con transiciones:', error);
+      throw new Error('Error al crear el video con transiciones');
+    }
+  };
+
+  // Update the generateFinalVideo function to use our new crossfade function
   const generateFinalVideo = async () => {
     // Declarar loggingInterval fuera del try para que sea accesible en el finally
     let loggingInterval: NodeJS.Timeout | null = null;
@@ -704,55 +782,8 @@ export default function VideoProcessor() {
           ]);
         }
 
-        // Si hay más de un segmento, aplicar transiciones
-        if (segments.length > 1) {
-          console.log('🔄 Aplicando transiciones entre segmentos...');
-
-          // Crear un archivo temporal para el resultado
-          let currentInput = 'processed_0.mp4';
-
-          for (let i = 1; i < segments.length; i++) {
-            const prevDuration = segments[i-1].timeEnd - segments[i-1].timeStart;
-
-            // Aplicar transición entre el video actual y el siguiente segmento
-            await ffmpeg.exec([
-              '-i', currentInput,
-              '-i', `processed_${i}.mp4`,
-              '-filter_complex',
-              `[0:v][1:v]xfade=transition=${selectedTransition.value}:duration=${TRANSITION_DURATION}:offset=${prevDuration-TRANSITION_DURATION}[outv]`,
-              '-map', '[outv]',
-              '-c:v', 'libx264',
-              '-pix_fmt', 'yuv420p',
-              '-preset', 'ultrafast',
-              '-y',
-              `temp_output_${i}.mp4`
-            ]);
-
-            // El resultado se convierte en la entrada para la siguiente iteración
-            currentInput = `temp_output_${i}.mp4`;
-          }
-
-          // Copiar el resultado final a input.mp4
-          await ffmpeg.exec([
-            '-i', currentInput,
-            '-c', 'copy',
-            '-y',
-            'input.mp4'
-          ]);
-
-          // Limpiar archivos temporales
-          for (let i = 1; i < segments.length; i++) {
-            await ffmpeg.deleteFile(`temp_output_${i}.mp4`);
-          }
-        } else {
-          // Si solo hay un segmento, no necesitamos transiciones
-          await ffmpeg.exec([
-            '-i', 'processed_0.mp4',
-            '-c', 'copy',
-            '-y',
-            'input.mp4'
-          ]);
-        }
+        // Use our createVideoWithCrossfade function instead of the complex filter
+        await createVideoWithCrossfade();
 
         // Verificar que el video se generó correctamente
         const videoCheck = await ffmpeg.readFile('input.mp4');
@@ -1557,6 +1588,26 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
     </div>
   );
 
+  // Add a transition selector component
+  const renderTransitionSelector = () => (
+    <div className="mb-4">
+      <label className="block text-sm font-medium text-gray-700 mb-2">
+        Transición entre escenas
+      </label>
+      <select
+        value={selectedTransition}
+        onChange={(e) => setSelectedTransition(e.target.value as TransitionType)}
+        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        {transitionOptions.map(option => (
+          <option key={option.value} value={option.value}>
+            {option.name} - {option.description}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-8">
       {/* Steps Indicator */}
@@ -1604,28 +1655,7 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
         </select>
       </div>
 
-      {/* Transition Style Selection */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Estilo de Transición
-        </label>
-        <select
-          value={selectedTransition.value}
-          onChange={(e) => {
-            const transition = transitionTypes.find(t => t.value === e.target.value);
-            if (transition) setSelectedTransition(transition);
-          }}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          {transitionTypes.map(transition => (
-            <option key={transition.value} value={transition.value}>
-              {transition.name} - {transition.description}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Subscribe Tag Option - Añadir después del selector de transición */}
+      {/* Subscribe Tag Option */}
       <div className="mb-4">
         <label className="flex items-center space-x-3">
           <input
@@ -1746,6 +1776,7 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
 
             {currentStep === ProcessStep.STORY_GENERATED && (
               <div className="space-y-6">
+                {renderTransitionSelector()}
                 {renderMusicSelector()}
                 {renderGenerateVideoButton()}
               </div>
