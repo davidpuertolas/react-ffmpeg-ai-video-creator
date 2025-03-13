@@ -24,6 +24,7 @@ interface StorySegment {
 enum ProcessStep {
   INITIAL = 'initial',
   STORY_GENERATED = 'story_generated',
+  PREVIEW = 'preview',
   GENERATING = 'generating',
   COMPLETED = 'completed'
 }
@@ -64,6 +65,8 @@ const subtitleStyles = [
     shadowx: 3,
     shadowy: 3,
     y: '(h-text_h)/2', // Centrado vertical
+    description: 'Subtítulos centrados con borde negro',
+    demoText: 'Preview Subtitle'
   },
   {
     name: 'TikTok Split',
@@ -77,6 +80,8 @@ const subtitleStyles = [
     splitColors: true,
     secondLineColor: 'yellow',
     y: '(h-text_h)/2-30', // Centrado vertical, ajustado para las dos líneas
+    description: 'Estilo TikTok con dos colores',
+    demoText: ['PRIMERA LÍNEA', 'SEGUNDA LÍNEA']
   }
 ];
 
@@ -185,6 +190,15 @@ export default function VideoProcessor() {
         src: url('/fonts/mrbeast.ttf') format('truetype');
         font-weight: normal;
         font-style: normal;
+      }
+
+      @keyframes fade-in-out {
+        0%, 100% { opacity: 0; transform: translateY(10px); }
+        20%, 80% { opacity: 1; transform: translateY(0); }
+      }
+
+      .animate-fade-in-out {
+        animation: fade-in-out 3s infinite;
       }
     `;
     document.head.appendChild(style);
@@ -374,6 +388,7 @@ export default function VideoProcessor() {
         });
 
         setSegments(segmentsWithImages);
+        // Cambiar a STORY_GENERATED primero para permitir la configuración
         setCurrentStep(ProcessStep.STORY_GENERATED);
         setMessage('Historia e imágenes generadas con éxito!');
         setProgress(100);
@@ -393,6 +408,8 @@ export default function VideoProcessor() {
 
   const generateAudioForSegment = async (text: string, index: number) => {
     try {
+      console.log(`Generando audio para segmento ${index + 1}: "${text.substring(0, 50)}..."`);
+
       // Generar el audio de la narración
       const response = await fetch('/api/tiktok-video/generate-speech', {
         method: 'POST',
@@ -402,6 +419,10 @@ export default function VideoProcessor() {
         body: JSON.stringify({ text }),
       });
 
+      if (!response.ok) {
+        throw new Error(`Error en la API de generación de voz: ${response.status} ${response.statusText}`);
+      }
+
       // Obtener el audio en blanco
       const blankResponse = await fetch('/songs/blank.mp3');
       if (!blankResponse.ok) {
@@ -410,6 +431,15 @@ export default function VideoProcessor() {
 
       // Convertir ambos audios a ArrayBuffer
       const speechBuffer = await response.arrayBuffer();
+
+      // Verificar que el buffer de voz no esté vacío
+      if (speechBuffer.byteLength === 0) {
+        console.error(`Buffer de audio vacío para el segmento ${index + 1}`);
+        throw new Error(`No se pudo generar audio para el segmento ${index + 1}`);
+      }
+
+      console.log(`Audio generado para segmento ${index + 1}: ${speechBuffer.byteLength} bytes`);
+
       const blankBuffer = await blankResponse.arrayBuffer();
 
       // Combinar los buffers
@@ -856,7 +886,7 @@ export default function VideoProcessor() {
 
       console.log('✅ Filtros de texto preparados');
 
-      // Después de combinar los audios pero antes de la generación final del video
+      // Crear el archivo final_audio.mp3 antes de usarlo
       if (selectedMusic !== BackgroundMusic.NONE) {
         setMessage('Añadiendo música de fondo...');
 
@@ -874,12 +904,12 @@ export default function VideoProcessor() {
           '[1:a]volume=0.3[music];' +
           '[voice][music]amix=inputs=2:duration=longest[aout]',
           '-map', '[aout]',
-          'mixed_audio.mp3'
+          'final_audio.mp3'
         ]);
-
-        // Renombrar el audio final
+      } else {
+        // Si no hay música de fondo, simplemente copiar raw_audio.mp3 a final_audio.mp3
         await ffmpeg.exec([
-          '-i', 'mixed_audio.mp3',
+          '-i', 'raw_audio.mp3',
           '-c', 'copy',
           'final_audio.mp3'
         ]);
@@ -931,32 +961,13 @@ export default function VideoProcessor() {
       setFinalVideoBlob(blob);
 
       // After processing audio segments, create a URL for the raw audio
-      await ffmpeg.exec([
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', 'concat.txt',
-        '-c', 'copy',
-        'raw_audio.mp3'
-      ]);
-
       const rawAudioData = await ffmpeg.readFile('raw_audio.mp3');
       const rawAudioUrl = URL.createObjectURL(new Blob([rawAudioData], { type: 'audio/mp3' }));
       setIntermediateOutputs(prev => ({ ...prev, rawAudio: rawAudioUrl }));
 
       // If background music is selected, create a URL for the mixed audio
       if (selectedMusic !== BackgroundMusic.NONE) {
-        await ffmpeg.exec([
-          '-i', 'raw_audio.mp3',
-          '-i', 'background_music.mp3',
-          '-filter_complex',
-          `[0:a]apad=pad_dur=${FINAL_EXTENSION}[voice];` +
-          '[1:a]volume=0.3[music];' +
-          '[voice][music]amix=inputs=2:duration=longest[aout]',
-          '-map', '[aout]',
-          'mixed_audio.mp3'
-        ]);
-
-        const mixedAudioData = await ffmpeg.readFile('mixed_audio.mp3');
+        const mixedAudioData = await ffmpeg.readFile('final_audio.mp3');
         const mixedAudioUrl = URL.createObjectURL(new Blob([mixedAudioData], { type: 'audio/mp3' }));
         setIntermediateOutputs(prev => ({ ...prev, backgroundMusic: mixedAudioUrl }));
       }
@@ -966,10 +977,14 @@ export default function VideoProcessor() {
       const rawVideoUrl = URL.createObjectURL(new Blob([rawVideoData], { type: 'video/mp4' }));
       setIntermediateOutputs(prev => ({ ...prev, rawVideo: rawVideoUrl }));
 
-      // After adding subtitles but before final mix, create a URL
-      const subtitledVideoData = await ffmpeg.readFile('temp_video.mp4');
-      const subtitledVideoUrl = URL.createObjectURL(new Blob([subtitledVideoData], { type: 'video/mp4' }));
-      setIntermediateOutputs(prev => ({ ...prev, subtitledVideo: subtitledVideoUrl }));
+      // After adding subtitles but before final mix, create a URL for subtitled video if it exists
+      try {
+        const subtitledVideoData = await ffmpeg.readFile('temp_video.mp4');
+        const subtitledVideoUrl = URL.createObjectURL(new Blob([subtitledVideoData], { type: 'video/mp4' }));
+        setIntermediateOutputs(prev => ({ ...prev, subtitledVideo: subtitledVideoUrl }));
+      } catch (error) {
+        console.log('No se encontró el video con subtítulos, continuando...');
+      }
 
       clearInterval(loggingInterval);
       setProgress(100);
@@ -1098,6 +1113,7 @@ export default function VideoProcessor() {
     const steps = [
       ProcessStep.INITIAL,
       ProcessStep.STORY_GENERATED,
+      ProcessStep.PREVIEW,
       ProcessStep.GENERATING,
       ProcessStep.COMPLETED
     ];
@@ -1387,17 +1403,39 @@ export default function VideoProcessor() {
       <label className="block text-sm font-medium text-gray-700 mb-2">
         Música de Fondo
       </label>
-      <select
-        value={selectedMusic}
-        onChange={(e) => setSelectedMusic(e.target.value as BackgroundMusic)}
-        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-      >
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {backgroundMusicOptions.map(option => (
-          <option key={option.value} value={option.value}>
-            {option.name} - {option.description}
-          </option>
+          <div
+            key={option.value}
+            onClick={() => setSelectedMusic(option.value as BackgroundMusic)}
+            className={`
+              border rounded-lg p-3 cursor-pointer transition-all duration-200
+              ${selectedMusic === option.value
+                ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200'
+                : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}
+            `}
+          >
+            <div className="flex items-center">
+              <div className={`
+                w-4 h-4 rounded-full mr-2 flex-shrink-0 border
+                ${selectedMusic === option.value
+                  ? 'border-blue-500 bg-blue-500'
+                  : 'border-gray-300 bg-white'}
+              `}>
+                {selectedMusic === option.value && (
+                  <svg className="w-4 h-4 text-white" viewBox="0 0 16 16" fill="currentColor">
+                    <circle cx="8" cy="8" r="4" />
+                  </svg>
+                )}
+              </div>
+              <div>
+                <p className="font-medium text-sm">{option.name}</p>
+                <p className="text-xs text-gray-500">{option.description}</p>
+              </div>
+            </div>
+          </div>
         ))}
-      </select>
+      </div>
     </div>
   );
 
@@ -1468,384 +1506,568 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
     }
   };
 
-  // Modify the completed step UI to show intermediate outputs
+  // Modify the completed step UI to show the final video on the left and controls on the right
   const renderCompletedStep = () => (
     <div className="space-y-6">
-      <div className="bg-green-50 border border-green-200 rounded-lg p-6">
-        <div className="flex items-center space-x-3 mb-4">
-          <div className="flex-shrink-0">
-            <svg className="h-6 w-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <h3 className="text-lg font-medium text-green-800">¡Video Generado con Éxito!</h3>
-        </div>
-        <p className="text-sm text-green-600 mb-4">
-          Tu video ha sido generado y descargado exitosamente.
-        </p>
 
-        {/* Background Images Used */}
-        <div className="mt-6">
-          <h4 className="text-lg font-medium text-gray-900 mb-4">Imágenes de Fondo Utilizadas</h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            {segments.map((segment, index) => (
-              <div key={index} className="bg-white rounded-lg shadow overflow-hidden">
-                <div className="aspect-[9/16] relative">
-                  <img
-                    src={segment.imageUrl}
-                    alt={`Fondo ${index + 1}`}
-                    className="w-full h-full object-cover"
-                  />
-                  <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white p-2">
-                    <span className="text-sm font-medium">Segmento {index + 1}</span>
+
+      {/* Two-column layout: Video on left, controls on right */}
+      <div className="flex flex-col md:flex-row gap-6 mt-4">
+        {/* Video column */}
+        <div className="md:w-1/2">
+          {generatedVideoUrl ? (
+            <div className="aspect-[9/16] bg-black rounded-xl overflow-hidden shadow-2xl border border-gray-200">
+              <video
+                controls
+                src={generatedVideoUrl}
+                className="w-full h-full"
+                poster="/video-thumbnail.jpg"
+              />
                   </div>
+          ) : (
+            <div className="aspect-[9/16] bg-gray-100 rounded-xl flex items-center justify-center">
+              <div className="flex flex-col items-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+                <p className="text-gray-600 text-sm">Preparando tu video...</p>
                 </div>
-                <div className="p-3">
-                  <p className="text-xs text-gray-500 line-clamp-2">
-                    {segment.visualDescription}
-                  </p>
+                </div>
+          )}
+        </div>
+
+        {/* Controls column */}
+        <div className="md:w-1/2 flex flex-col justify-center">
+        {generatedVideoUrl && (
+            <div className="space-y-6">
+              <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-100">
+                <h4 className="text-lg font-semibold text-gray-800 mb-4">Tu video está listo</h4>
+
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 text-sm text-gray-600">
+                    <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span>Subtítulos aplicados</span>
+            </div>
+
+                  <div className="flex items-center gap-3 text-sm text-gray-600">
+                    <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span>Transiciones suaves entre escenas</span>
+          </div>
+
+                  <div className="flex items-center gap-3 text-sm text-gray-600">
+                    <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span>Audio sincronizado con imágenes</span>
+            </div>
+
+                  {includeSubscribeTag && (
+                    <div className="flex items-center gap-3 text-sm text-gray-600">
+                      <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                      </svg>
+                      <span>Animación de suscripción incluida</span>
+            </div>
+          )}
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
 
-        {/* Final Video */}
-        {generatedVideoUrl && (
-          <div className="mt-4">
-            <h4 className="text-lg font-medium text-gray-900 mb-4">Video Final</h4>
-            <div className="relative aspect-[9/16] w-full max-w-sm mx-auto bg-black rounded-lg overflow-hidden">
-              <video controls src={generatedVideoUrl} className="w-full h-full" />
-            </div>
-          </div>
-        )}
-
-        {/* Intermediate Outputs */}
-        <div className="mt-6 space-y-4">
-          <h4 className="text-lg font-medium text-gray-900">Archivos Intermedios</h4>
-
-          {intermediateOutputs.rawAudio && (
-            <div className="p-4 bg-white rounded-lg shadow">
-              <h5 className="font-medium text-gray-700 mb-2">Audio Raw (Sin música)</h5>
-              <audio controls src={intermediateOutputs.rawAudio} className="w-full" />
+              <div className="space-y-3">
               <button
-                onClick={() => downloadFile(intermediateOutputs.rawAudio, 'raw_audio.mp3')}
-                className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+                  onClick={() => finalVideoBlob && downloadFile(finalVideoBlob, 'video_final.mp4')}
+                  className="w-full py-3 px-4 flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg text-sm font-medium hover:from-blue-700 hover:to-indigo-700 transition-all duration-200 shadow-sm"
               >
-                Descargar Audio Raw
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  Descargar Video
               </button>
-            </div>
-          )}
 
-          {intermediateOutputs.backgroundMusic && (
-            <div className="p-4 bg-white rounded-lg shadow">
-              <h5 className="font-medium text-gray-700 mb-2">Audio con Música de Fondo</h5>
-              <audio controls src={intermediateOutputs.backgroundMusic} className="w-full" />
               <button
-                onClick={() => downloadFile(intermediateOutputs.backgroundMusic, 'mixed_audio.mp3')}
-                className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+                  onClick={() => window.location.reload()}
+                  className="w-full py-3 px-4 flex items-center justify-center gap-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 transition-all duration-200"
               >
-                Descargar Audio con Música
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Crear Nuevo Video
               </button>
-            </div>
-          )}
-
-          {intermediateOutputs.rawVideo && (
-            <div className="p-4 bg-white rounded-lg shadow">
-              <h5 className="font-medium text-gray-700 mb-2">Video Raw (Sin subtítulos)</h5>
-              <video controls src={intermediateOutputs.rawVideo} className="w-full max-w-sm mx-auto" />
-              <button
-                onClick={() => downloadFile(intermediateOutputs.rawVideo, 'raw_video.mp4')}
-                className="mt-2 text-sm text-blue-600 hover:text-blue-800"
-              >
-                Descargar Video Raw
-              </button>
-            </div>
-          )}
-
-          {intermediateOutputs.subtitledVideo && (
-            <div className="p-4 bg-white rounded-lg shadow">
-              <h5 className="font-medium text-gray-700 mb-2">Video con Subtítulos (Sin música)</h5>
-              <video controls src={intermediateOutputs.subtitledVideo} className="w-full max-w-sm mx-auto" />
-              <button
-                onClick={() => downloadFile(intermediateOutputs.subtitledVideo, 'subtitled_video.mp4')}
-                className="mt-2 text-sm text-blue-600 hover:text-blue-800"
-              >
-                Descargar Video con Subtítulos
-              </button>
+              </div>
             </div>
           )}
         </div>
-
-        {/* Final Video Download Button */}
-        <button
-          onClick={() => finalVideoBlob && downloadFile(finalVideoBlob, 'video_final.mp4')}
-          className="mt-6 w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-        >
-          Descargar Video Final
-        </button>
       </div>
     </div>
   );
 
-  // Add a transition selector component
+  // Selector de transiciones mejorado
   const renderTransitionSelector = () => (
     <div className="mb-4">
       <label className="block text-sm font-medium text-gray-700 mb-2">
         Transición entre escenas
       </label>
-      <select
-        value={selectedTransition}
-        onChange={(e) => setSelectedTransition(e.target.value as TransitionType)}
-        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-      >
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {transitionOptions.map(option => (
-          <option key={option.value} value={option.value}>
-            {option.name} - {option.description}
-          </option>
+          <div
+            key={option.value}
+            onClick={() => setSelectedTransition(option.value as TransitionType)}
+            className={`
+              border rounded-lg p-3 cursor-pointer transition-all duration-200
+              ${selectedTransition === option.value
+                ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200'
+                : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}
+            `}
+          >
+            <div className="flex items-center">
+              <div className={`
+                w-4 h-4 rounded-full mr-2 flex-shrink-0 border
+                ${selectedTransition === option.value
+                  ? 'border-blue-500 bg-blue-500'
+                  : 'border-gray-300 bg-white'}
+              `}>
+                {selectedTransition === option.value && (
+                  <svg className="w-4 h-4 text-white" viewBox="0 0 16 16" fill="currentColor">
+                    <circle cx="8" cy="8" r="4" />
+                  </svg>
+                )}
+              </div>
+              <div>
+                <p className="font-medium text-sm">{option.name}</p>
+                <p className="text-xs text-gray-500">{option.description}</p>
+              </div>
+            </div>
+          </div>
         ))}
-      </select>
+      </div>
+    </div>
+  );
+
+  // Mejorar la opción de suscripción con más detalles y preview
+  const renderSubscribeOption = () => (
+    <div className="space-y-3">
+      <label className="block text-sm font-medium text-gray-700">
+        Animación de Suscripción
+      </label>
+      <div
+        className={`
+          relative p-4 border rounded-lg cursor-pointer transition-all duration-200
+          ${includeSubscribeTag
+            ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200'
+            : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}
+        `}
+        onClick={() => setIncludeSubscribeTag(!includeSubscribeTag)}
+      >
+        <div className="flex items-start gap-4">
+          {/* Preview de la animación */}
+          <div className="w-24 h-24 bg-gray-900 rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden">
+            <img
+              src="/tags/suscribe.gif"
+              alt="Preview animación"
+              className="w-full h-full object-cover"
+            />
+          </div>
+
+          <div className="flex-grow">
+            <div className="flex items-start gap-3">
+              <div className={`
+                w-4 h-4 mt-0.5 rounded flex-shrink-0 border
+                ${includeSubscribeTag
+                  ? 'border-blue-500 bg-blue-500'
+                  : 'border-gray-300'}
+              `}>
+                {includeSubscribeTag && (
+                  <svg className="w-4 h-4 text-white" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/>
+                  </svg>
+                )}
+              </div>
+              <div>
+                <p className="font-medium text-sm text-gray-900">Añadir animación de suscripción</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Aparecerá durante los últimos 2 segundos del video con un efecto de sonido
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-blue-100 text-blue-800">
+                    <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    2 segundos
+                  </span>
+                  <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-blue-100 text-blue-800">
+                    <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072M12 9.5l3-3 3 3M9.464 9.464a5 5 0 007.072 0" />
+                    </svg>
+                    Con sonido
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Reemplazar el selector de subtítulos actual con este nuevo diseño
+  const renderSubtitleStyleSelector = () => (
+    <div className="space-y-3">
+      <label className="block text-sm font-medium text-gray-700">
+        Estilo de Subtítulos
+      </label>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {subtitleStyles.map(style => (
+          <div
+            key={style.name}
+            onClick={() => setSelectedStyle(style)}
+            className={`
+              relative p-4 border rounded-lg cursor-pointer transition-all duration-200
+              ${selectedStyle.name === style.name
+                ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200'
+                : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}
+            `}
+          >
+            <div className="flex flex-col gap-3">
+              <div className="flex items-start gap-3">
+                <div className={`
+                  w-4 h-4 mt-0.5 rounded-full border flex-shrink-0
+                  ${selectedStyle.name === style.name
+                    ? 'border-blue-500 bg-blue-500'
+                    : 'border-gray-300'}
+                `}>
+                  {selectedStyle.name === style.name && (
+                    <svg className="w-4 h-4 text-white" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/>
+                    </svg>
+                  )}
+                </div>
+                <div>
+                  <p className="font-medium text-sm text-gray-900">{style.name}</p>
+                  <p className="text-xs text-gray-500 mt-1">{style.description}</p>
+                </div>
+              </div>
+
+              {/* Demo del estilo */}
+              <div className="relative w-full aspect-[16/6] bg-gray-900 rounded-md overflow-hidden">
+                <div className="absolute inset-0">
+                  {/* Fondo de ejemplo */}
+                  <div className="w-full h-full bg-gradient-to-br from-gray-800 to-gray-900" />
+
+                  {/* Contenedor de subtítulos con animación */}
+                  <div className="absolute inset-0 flex items-center justify-center p-1">
+                    <div className={`
+                      text-center animate-fade-in-out
+                      ${style.splitColors ? 'space-y-1' : ''}
+                    `}>
+                      {style.splitColors && Array.isArray(style.demoText) ? (
+                        <>
+                          <div className="text-yellow-400 font-bold text-xl" style={{
+                            textShadow: '2px 2px 4px rgba(0,0,0,0.9)',
+                            WebkitTextStroke: '1.5px black',
+                            letterSpacing: '0.5px',
+                            fontFamily: '"The Bold Font", Arial, sans-serif',
+                            lineHeight: '1.1'
+                          }}>
+                            {style.demoText[0]}
+                          </div>
+                          <div className="text-white font-bold text-xl" style={{
+                            textShadow: '2px 2px 4px rgba(0,0,0,0.9)',
+                            WebkitTextStroke: '1.5px black',
+                            letterSpacing: '0.5px',
+                            fontFamily: '"The Bold Font", Arial, sans-serif',
+                            lineHeight: '1.1'
+                          }}>
+                            {style.demoText[1]}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-white font-bold text-xl" style={{
+                          textShadow: '2px 2px 4px rgba(0,0,0,0.9)',
+                          WebkitTextStroke: '1.5px black',
+                          letterSpacing: '0.5px',
+                          fontFamily: '"The Bold Font", Arial, sans-serif',
+                          lineHeight: '1.1'
+                        }}>
+                          {style.demoText}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  // Añadir el renderizado de la vista previa
+  const renderPreviewStep = () => (
+    <div className="space-y-6">
+      <div className="bg-blue-50 rounded-lg p-4 mb-4">
+        <h2 className="text-lg font-semibold text-blue-800 mb-2">Vista Previa de Segmentos</h2>
+        <p className="text-sm text-blue-600">
+          Revisa cada segmento antes de generar el video final. Puedes editar el texto o regenerar las imágenes.
+        </p>
+      </div>
+
+      <div className="space-y-6">
+        {segments.map((segment, index) => (
+          <div key={index} className="border rounded-lg overflow-hidden shadow-sm">
+            <div className="p-4">
+              <div className="flex justify-between items-start mb-4">
+                <h3 className="text-lg font-medium text-gray-900">Segmento {index + 1}</h3>
+                <button
+                  onClick={() => regenerateSegmentScript(index)}
+                  disabled={regeneratingIndex === index}
+                  className="text-blue-600 hover:text-blue-800 flex items-center text-sm"
+                >
+                  {regeneratingIndex === index ? (
+                    <span className="flex items-center">
+                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Regenerando...
+                    </span>
+                  ) : (
+                    <span className="flex items-center">
+                      <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      Regenerar texto
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              <div className="flex flex-col md:flex-row gap-4">
+                {/* Imagen del segmento - más pequeña */}
+                <div className="md:w-1/3 relative">
+                  <div className="aspect-[9/16] rounded-lg overflow-hidden shadow-md">
+                    {segment.imageUrl ? (
+                      <img
+                        src={segment.imageUrl}
+                        alt={`Segmento ${index + 1}`}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full bg-gray-200 flex items-center justify-center">
+                        <span className="text-gray-500">Sin imagen</span>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleEditImage(index)}
+                    className="absolute bottom-2 right-2 bg-white bg-opacity-90 p-2 rounded-full shadow-md hover:bg-opacity-100"
+                  >
+                    <svg className="w-5 h-5 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                    </svg>
+                  </button>
+                </div>
+
+                {/* Texto del segmento */}
+                <div className="md:w-2/3">
+                  <textarea
+                    value={segment.narration}
+                    onChange={(e) => updateSegmentNarration(index, e.target.value)}
+                    className="w-full p-3 border rounded-md text-sm resize-none mb-3"
+                    rows={6}
+                  />
+
+                  <div className="text-xs text-gray-500">
+                    <span className="font-medium">Descripción visual:</span> {segment.visualDescription}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex space-x-4 pt-4">
+        <button
+          onClick={() => setCurrentStep(ProcessStep.STORY_GENERATED)}
+          className="flex-1 py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+        >
+          Volver a Configuración
+        </button>
+        <button
+          onClick={generateFinalVideo}
+          disabled={loading}
+          className="flex-1 py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Generar Video
+        </button>
+      </div>
+    </div>
+  );
+
+  // Añadir un botón para ir a la vista previa desde la configuración
+  const renderStoryGeneratedStep = () => (
+    <div className="space-y-6">
+      <div className="bg-blue-50 rounded-lg p-4 mb-4">
+        <h2 className="text-lg font-semibold text-blue-800 mb-2">Paso 2: Configuración</h2>
+        <p className="text-sm text-blue-600">
+          Personaliza cómo se verá y sonará tu video.
+        </p>
+      </div>
+
+      {renderSubtitleStyleSelector()}
+      {renderMusicSelector()}
+      {renderTransitionSelector()}
+      {renderSubscribeOption()}
+
+      <button
+        onClick={() => setCurrentStep(ProcessStep.PREVIEW)}
+        className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200"
+      >
+        Continuar a Vista Previa
+      </button>
     </div>
   );
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-8">
-      {/* Steps Indicator */}
-      <div className="flex justify-between mb-8">
-        <StepIndicator
-          step={ProcessStep.INITIAL}
-          currentStep={currentStep}
-          title="Generar Historia"
-        />
-        <StepIndicator
-          step={ProcessStep.STORY_GENERATED}
-          currentStep={currentStep}
-          title="Revisar Historia"
-        />
-        <StepIndicator
-          step={ProcessStep.GENERATING}
-          currentStep={currentStep}
-          title="Generando Video"
-        />
-        <StepIndicator
-          step={ProcessStep.COMPLETED}
-          currentStep={currentStep}
-          title="Video Listo"
-        />
-      </div>
+    <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        {/* Header con pasos */}
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 border-b border-gray-200">
+          <h1 className="text-xl font-bold text-gray-800 mb-4">Generador de Videos</h1>
 
-      {/* Subtitle Style Selection */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Select Subtitle Style
-        </label>
-        <select
-          value={selectedStyle.name}
-          onChange={(e) => {
-            const style = subtitleStyles.find(s => s.name === e.target.value);
-            if (style) setSelectedStyle(style);
-          }}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          {subtitleStyles.map(style => (
-            <option key={style.name} value={style.name}>
-              {style.name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Subscribe Tag Option */}
-      <div className="mb-4">
-        <label className="flex items-center space-x-3">
-          <input
-            type="checkbox"
-            checked={includeSubscribeTag}
-            onChange={(e) => setIncludeSubscribeTag(e.target.checked)}
-            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-          />
-          <span className="text-sm font-medium text-gray-700">
-            Incluir animación de suscripción al final del video
-          </span>
-        </label>
-        <p className="mt-1 text-sm text-gray-500">
-          Añade una animación de "Suscríbete" durante los últimos 2 segundos del video
-        </p>
-      </div>
-
-      {/* Subtitle Preview */}
-      <div className="mb-4">
-        <h3 className="text-sm font-medium text-gray-700 mb-2">Subtitle Preview</h3>
-        <SubtitlePreview />
-      </div>
-
-      {/* Step Content */}
-      <div className="border rounded-lg p-6 bg-white shadow-sm">
-        {currentStep === ProcessStep.INITIAL && (
-          <div className="space-y-4">
-            <h2 className="text-xl font-bold mb-4">Paso 1: Generar Historia</h2>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                ¿Sobre qué quieres que trate la historia? (60 segundos)
-              </label>
-              <textarea
-                value={storyPrompt}
-                onChange={(e) => setStoryPrompt(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                rows={4}
-                placeholder="Por ejemplo: Una historia sobre un gato que descubre que puede volar..."
-              />
-            </div>
-            {renderGenerateStoryButton()}
+          {/* Steps Indicator - Actualizado con el nuevo paso */}
+          <div className="flex justify-between px-2 md:px-8">
+            <StepIndicator
+              step={ProcessStep.INITIAL}
+              currentStep={currentStep}
+              title="Generar"
+            />
+            <div className="flex-grow border-t-2 border-gray-300 transform translate-y-4 mx-2"></div>
+            <StepIndicator
+              step={ProcessStep.STORY_GENERATED}
+              currentStep={currentStep}
+              title="Configurar"
+            />
+            <div className="flex-grow border-t-2 border-gray-300 transform translate-y-4 mx-2"></div>
+            <StepIndicator
+              step={ProcessStep.PREVIEW}
+              currentStep={currentStep}
+              title="Vista Previa"
+            />
+            <div className="flex-grow border-t-2 border-gray-300 transform translate-y-4 mx-2"></div>
+            <StepIndicator
+              step={ProcessStep.GENERATING}
+              currentStep={currentStep}
+              title="Procesando"
+            />
+            <div className="flex-grow border-t-2 border-gray-300 transform translate-y-4 mx-2"></div>
+            <StepIndicator
+              step={ProcessStep.COMPLETED}
+              currentStep={currentStep}
+              title="Finalizado"
+            />
           </div>
-        )}
+        </div>
 
-        {currentStep >= ProcessStep.STORY_GENERATED && (
-          <div className="space-y-6">
-            <h2 className="text-xl font-bold mb-4">Historia Generada</h2>
+        {/* Contenido principal */}
+        <div className="p-4 md:p-6">
+          {/* Step Content */}
+          {currentStep === ProcessStep.INITIAL && (
             <div className="space-y-4">
-              {segments.map((segment, index) => (
-                <div key={index} className="flex gap-4">
-                  {/* Contenedor de imagen con botón de edición */}
-                  <div className="relative w-48 h-48 flex-shrink-0">
-                    <div className="w-full h-full bg-gray-200 rounded-lg overflow-hidden">
-                      {segment.imageUrl ? (
-                        <img
-                          src={segment.imageUrl}
-                          alt={`Imagen para segmento ${index + 1}`}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-600"></div>
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => handleEditImage(index)}
-                      className="absolute top-2 right-2 p-2 bg-white rounded-full shadow-lg hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
-                      </svg>
-                    </button>
-                  </div>
-
-                  {/* Contenido del segmento */}
-                  <div className="flex-grow">
-                    <div className="p-4 border rounded-md bg-gray-50">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-semibold text-blue-600">
-                          Segmento {index + 1}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-gray-500">
-                            {segment.timeStart}s - {segment.timeEnd}s
-                          </span>
-                          <button
-                            onClick={() => regenerateSegmentScript(index)}
-                            disabled={regeneratingIndex !== null}
-                            className="px-2 py-1 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-1"
-                          >
-                            {regeneratingIndex === index ? (
-                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                            ) : (
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                              </svg>
-                            )}
-                            {regeneratingIndex === index ? 'Regenerando...' : 'Regenerar Script'}
-                          </button>
-                        </div>
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-medium text-gray-700 mb-2">Narración:</h4>
-                        <textarea
-                          value={segment.narration}
-                          onChange={(e) => updateSegmentNarration(index, e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm text-gray-600 resize-none bg-white"
-                          rows={4}
-                          style={{ minHeight: '100px' }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {currentStep === ProcessStep.STORY_GENERATED && (
-              <div className="space-y-6">
-                {renderTransitionSelector()}
-                {renderMusicSelector()}
-                {renderGenerateVideoButton()}
+              <div className="bg-blue-50 rounded-lg p-4 mb-4">
+                <h2 className="text-lg font-semibold text-blue-800 mb-2">Paso 1: Escribir Prompt</h2>
+                <p className="text-sm text-blue-600">
+                  Describe la historia que quieres crear y nuestro sistema generará un guion y las imágenes necesarias.
+                </p>
               </div>
-            )}
-          </div>
-        )}
 
-        {currentStep === ProcessStep.GENERATING && (
-          <div className="space-y-6">
-            <h2 className="text-xl font-bold mb-4">Generando Video</h2>
-            <div className="space-y-4">
-              {/* Panel de progreso mejorado */}
-              <div className="bg-blue-50 p-6 rounded-lg border border-blue-100">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
-                      <span className="font-medium text-blue-800">{message}</span>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  ¿Sobre qué quieres que trate la historia? (60 segundos)
+                </label>
+                <textarea
+                  value={storyPrompt}
+                  onChange={(e) => setStoryPrompt(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                  rows={4}
+                  placeholder="Por ejemplo: Una historia sobre un gato que descubre que puede volar..."
+                />
+              </div>
+
+              {renderGenerateStoryButton()}
+            </div>
+          )}
+
+          {currentStep === ProcessStep.STORY_GENERATED && renderStoryGeneratedStep()}
+
+          {/* Nuevo paso de vista previa */}
+          {currentStep === ProcessStep.PREVIEW && renderPreviewStep()}
+
+          {currentStep === ProcessStep.GENERATING && (
+            <div className="space-y-6">
+              <h2 className="text-xl font-bold mb-4">Generando Video</h2>
+              <div className="space-y-4">
+                {/* Panel de progreso mejorado */}
+                <div className="bg-blue-50 p-6 rounded-lg border border-blue-100">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                        <span className="font-medium text-blue-800">{message}</span>
+                      </div>
+                      <span className="text-blue-600 font-semibold">{progress}%</span>
                     </div>
-                    <span className="text-blue-600 font-semibold">{progress}%</span>
-                  </div>
 
-                  <div className="w-full bg-blue-100 rounded-full h-2.5">
-                    <div
-                      className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
-                      style={{ width: `${progress}%` }}
-                    ></div>
-                  </div>
+                    <div className="w-full bg-blue-100 rounded-full h-2.5">
+                      <div
+                        className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                        style={{ width: `${progress}%` }}
+                      ></div>
+                    </div>
 
-                  {/* Lista de pasos con estado */}
-                  <div className="mt-4 space-y-2">
-                    <StepStatus
-                      completed={progress >= 25}
-                      current={progress < 25}
-                      title="Generando Audios"
-                      description="Creando voces para cada segmento..."
-                    />
-                    <StepStatus
-                      completed={progress >= 40}
-                      current={progress >= 25 && progress < 40}
-                      title="Generando Subtítulos"
-                      description="Sincronizando texto con audio..."
-                    />
-                    <StepStatus
-                      completed={progress >= 60}
-                      current={progress >= 40 && progress < 60}
-                      title="Procesando Audio"
-                      description="Combinando segmentos de audio..."
-                    />
-                    <StepStatus
-                      completed={progress >= 90}
-                      current={progress >= 60 && progress < 90}
-                      title="Renderizando Video"
-                      description="Mezclando video, audio y subtítulos..."
-                    />
-                    <StepStatus
-                      completed={progress === 100}
-                      current={progress >= 90 && progress < 100}
-                      title="Finalizando"
-                      description="Preparando video final..."
-                    />
+                    {/* Lista de pasos con estado */}
+                    <div className="mt-4 space-y-2">
+                      <StepStatus
+                        completed={progress >= 25}
+                        current={progress < 25}
+                        title="Generando Audios"
+                        description="Creando voces para cada segmento..."
+                      />
+                      <StepStatus
+                        completed={progress >= 40}
+                        current={progress >= 25 && progress < 40}
+                        title="Generando Subtítulos"
+                        description="Sincronizando texto con audio..."
+                      />
+                      <StepStatus
+                        completed={progress >= 60}
+                        current={progress >= 40 && progress < 60}
+                        title="Procesando Audio"
+                        description="Combinando segmentos de audio..."
+                      />
+                      <StepStatus
+                        completed={progress >= 90}
+                        current={progress >= 60 && progress < 90}
+                        title="Renderizando Video"
+                        description="Mezclando video, audio y subtítulos..."
+                      />
+                      <StepStatus
+                        completed={progress === 100}
+                        current={progress >= 90 && progress < 100}
+                        title="Finalizando"
+                        description="Preparando video final..."
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {currentStep === ProcessStep.COMPLETED && renderCompletedStep()}
+          {currentStep === ProcessStep.COMPLETED && renderCompletedStep()}
+        </div>
       </div>
 
       {/* Modal para editar imagen */}
