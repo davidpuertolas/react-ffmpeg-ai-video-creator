@@ -180,6 +180,18 @@ export default function VideoProcessor() {
   const [intermediateOutputs, setIntermediateOutputs] = useState<IntermediateOutputs>({});
   // Add state for transition type
   const [selectedTransition, setSelectedTransition] = useState<TransitionType>(TransitionType.FADE);
+  // Añadir después de las constantes existentes
+  const openAIVoices = [
+    { id: "alloy", name: "Alloy", description: "Voz neutral y versátil" },
+    { id: "echo", name: "Echo", description: "Voz femenina suave" },
+    { id: "fable", name: "Fable", description: "Voz narrativa expresiva" },
+    { id: "onyx", name: "Onyx", description: "Voz masculina potente" },
+    { id: "nova", name: "Nova", description: "Voz femenina amigable" },
+    { id: "shimmer", name: "Shimmer", description: "Voz clara y brillante" }
+  ];
+
+  // Añadir a los estados
+  const [selectedVoice, setSelectedVoice] = useState(openAIVoices[0].id);
 
   // Cargar la fuente globalmente
   useEffect(() => {
@@ -408,28 +420,44 @@ export default function VideoProcessor() {
 
   const generateAudioForSegment = async (text: string, index: number) => {
     try {
-      console.log(`Generando audio para segmento ${index + 1}: "${text.substring(0, 50)}..."`);
+      console.log(`Generando audio para segmento ${index + 1} con voz ${selectedVoice}: "${text.substring(0, 50)}..."`);
 
-      // Generar el audio de la narración
+      // Generar el audio de la narración con la voz seleccionada usando OpenAI
       const response = await fetch('/api/tiktok-video/generate-speech', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({
+          text,
+          voice: selectedVoice,
+        }),
       });
 
       if (!response.ok) {
-        throw new Error(`Error en la API de generación de voz: ${response.status} ${response.statusText}`);
+        console.error(`Error en la API de generación de voz: ${response.status} ${response.statusText}`);
+
+        // Si hay un error, intentar mostrar más detalles
+        try {
+          const errorData = await response.json();
+          console.error('Detalles del error:', errorData);
+        } catch (e) {
+          // Ignorar errores al intentar parsear la respuesta
+        }
+
+        // Usar audio de respaldo si la API falla
+        console.log('Usando audio de respaldo...');
+        const fallbackResponse = await fetch('/songs/fallback_voice.mp3');
+        if (!fallbackResponse.ok) {
+          throw new Error('No se pudo cargar el audio de respaldo');
+        }
+
+        const fallbackBuffer = await fallbackResponse.arrayBuffer();
+        const blob = new Blob([fallbackBuffer], { type: 'audio/mpeg' });
+        return blob;
       }
 
-      // Obtener el audio en blanco
-      const blankResponse = await fetch('/songs/blank.mp3');
-      if (!blankResponse.ok) {
-        throw new Error('No se pudo cargar el audio en blanco');
-      }
-
-      // Convertir ambos audios a ArrayBuffer
+      // Resto del código existente...
       const speechBuffer = await response.arrayBuffer();
 
       // Verificar que el buffer de voz no esté vacío
@@ -440,6 +468,8 @@ export default function VideoProcessor() {
 
       console.log(`Audio generado para segmento ${index + 1}: ${speechBuffer.byteLength} bytes`);
 
+      // Obtener el audio en blanco para añadir al final
+      const blankResponse = await fetch('/songs/blank.mp3');
       const blankBuffer = await blankResponse.arrayBuffer();
 
       // Combinar los buffers
@@ -452,7 +482,18 @@ export default function VideoProcessor() {
       return blob;
     } catch (error) {
       console.error(`Error generating audio for segment ${index}:`, error);
-      throw error;
+
+      // En caso de error, intentar usar un audio de respaldo
+      try {
+        console.log('Usando audio de respaldo después de error...');
+        const fallbackResponse = await fetch('/songs/fallback_voice.mp3');
+        const fallbackBuffer = await fallbackResponse.arrayBuffer();
+        const blob = new Blob([fallbackBuffer], { type: 'audio/mpeg' });
+        return blob;
+      } catch (fallbackError) {
+        console.error('Error con audio de respaldo:', fallbackError);
+        throw error; // Si todo falla, lanzar el error original
+      }
     }
   };
 
@@ -1806,86 +1847,91 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
   // Añadir el renderizado de la vista previa
   const renderPreviewStep = () => (
     <div className="space-y-6">
-      <div className="bg-blue-50 rounded-lg p-4 mb-4">
-        <h2 className="text-lg font-semibold text-blue-800 mb-2">Vista Previa de Segmentos</h2>
-        <p className="text-sm text-blue-600">
-          Revisa cada segmento antes de generar el video final. Puedes editar el texto o regenerar las imágenes.
-        </p>
-      </div>
+      {/* Tabs para navegar entre segmentos */}
+      <div className="border rounded-lg overflow-hidden shadow-sm">
+        <div className="flex overflow-x-auto bg-gray-50 border-b">
+          {segments.map((_, index) => (
+            <button
+              key={index}
+              onClick={() => setSelectedSegmentIndex(index)}
+              className={`px-4 py-2 text-sm font-medium whitespace-nowrap ${
+                selectedSegmentIndex === index
+                  ? 'bg-white border-b-2 border-blue-500 text-blue-600'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              Segmento {index + 1}
+            </button>
+          ))}
+        </div>
 
-      <div className="space-y-6">
-        {segments.map((segment, index) => (
-          <div key={index} className="border rounded-lg overflow-hidden shadow-sm">
-            <div className="p-4">
-              <div className="flex justify-between items-start mb-4">
-                <h3 className="text-lg font-medium text-gray-900">Segmento {index + 1}</h3>
-                <button
-                  onClick={() => regenerateSegmentScript(index)}
-                  disabled={regeneratingIndex === index}
-                  className="text-blue-600 hover:text-blue-800 flex items-center text-sm"
-                >
-                  {regeneratingIndex === index ? (
-                    <span className="flex items-center">
-                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      Regenerando...
-                    </span>
+        {/* Contenido del segmento seleccionado */}
+        {selectedSegmentIndex !== null && (
+          <div className="p-4">
+            <div className="flex justify-between items-start mb-4">
+              <h3 className="text-lg font-medium text-gray-900">Segmento {selectedSegmentIndex + 1}</h3>
+              <button
+                onClick={() => regenerateSegmentScript(selectedSegmentIndex)}
+                disabled={regeneratingIndex === selectedSegmentIndex}
+                className="text-blue-600 hover:text-blue-800 flex items-center text-sm"
+              >
+                {regeneratingIndex === selectedSegmentIndex ? (
+                  <span className="flex items-center">
+                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Regenerando...
+                  </span>
+                ) : (
+                  <span className="flex items-center">
+                    <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Regenerar texto
+                  </span>
+                )}
+              </button>
+            </div>
+
+            <div className="flex flex-col md:flex-row gap-4">
+              {/* Imagen del segmento - más pequeña */}
+              <div className="md:w-1/4 relative">
+                <div className="aspect-[9/16] rounded-lg overflow-hidden shadow-md">
+                  {segments[selectedSegmentIndex].imageUrl ? (
+                    <img
+                      src={segments[selectedSegmentIndex].imageUrl}
+                      alt={`Segmento ${selectedSegmentIndex + 1}`}
+                      className="w-full h-full object-cover"
+                    />
                   ) : (
-                    <span className="flex items-center">
-                      <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                      Regenerar texto
-                    </span>
+                    <div className="w-full h-full bg-gray-200 flex items-center justify-center">
+                      <span className="text-gray-500">Sin imagen</span>
+                    </div>
                   )}
+                </div>
+                <button
+                  onClick={() => handleEditImage(selectedSegmentIndex)}
+                  className="absolute bottom-2 right-2 bg-white bg-opacity-90 p-2 rounded-full shadow-md hover:bg-opacity-100"
+                >
+                  <svg className="w-5 h-5 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
                 </button>
               </div>
 
-              <div className="flex flex-col md:flex-row gap-4">
-                {/* Imagen del segmento - más pequeña */}
-                <div className="md:w-1/3 relative">
-                  <div className="aspect-[9/16] rounded-lg overflow-hidden shadow-md">
-                    {segment.imageUrl ? (
-                      <img
-                        src={segment.imageUrl}
-                        alt={`Segmento ${index + 1}`}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full bg-gray-200 flex items-center justify-center">
-                        <span className="text-gray-500">Sin imagen</span>
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => handleEditImage(index)}
-                    className="absolute bottom-2 right-2 bg-white bg-opacity-90 p-2 rounded-full shadow-md hover:bg-opacity-100"
-                  >
-                    <svg className="w-5 h-5 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                    </svg>
-                  </button>
-                </div>
-
-                {/* Texto del segmento */}
-                <div className="md:w-2/3">
-                  <textarea
-                    value={segment.narration}
-                    onChange={(e) => updateSegmentNarration(index, e.target.value)}
-                    className="w-full p-3 border rounded-md text-sm resize-none mb-3"
-                    rows={6}
-                  />
-
-                  <div className="text-xs text-gray-500">
-                    <span className="font-medium">Descripción visual:</span> {segment.visualDescription}
-                  </div>
-                </div>
+              {/* Texto del segmento */}
+              <div className="md:w-3/4">
+                <textarea
+                  value={segments[selectedSegmentIndex].narration}
+                  onChange={(e) => updateSegmentNarration(selectedSegmentIndex, e.target.value)}
+                  className="w-full p-3 border rounded-md text-sm resize-none mb-3"
+                  rows={6}
+                />
               </div>
             </div>
           </div>
-        ))}
+        )}
       </div>
 
       <div className="flex space-x-4 pt-4">
@@ -1909,24 +1955,63 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
   // Añadir un botón para ir a la vista previa desde la configuración
   const renderStoryGeneratedStep = () => (
     <div className="space-y-6">
-      <div className="bg-blue-50 rounded-lg p-4 mb-4">
-        <h2 className="text-lg font-semibold text-blue-800 mb-2">Paso 2: Configuración</h2>
-        <p className="text-sm text-blue-600">
-          Personaliza cómo se verá y sonará tu video.
-        </p>
-      </div>
-
+      {renderVoiceSelector()}
       {renderSubtitleStyleSelector()}
       {renderMusicSelector()}
       {renderTransitionSelector()}
       {renderSubscribeOption()}
 
       <button
-        onClick={() => setCurrentStep(ProcessStep.PREVIEW)}
+        onClick={() => {
+          setSelectedSegmentIndex(0); // Inicializar con el primer segmento
+          setCurrentStep(ProcessStep.PREVIEW);
+        }}
         className="w-full py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200"
       >
         Continuar a Vista Previa
       </button>
+    </div>
+  );
+
+  // Añadir el selector de voces
+  const renderVoiceSelector = () => (
+    <div className="mb-4">
+      <label className="block text-sm font-medium text-gray-700 mb-2">
+        Voz de Narración
+      </label>
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+        {openAIVoices.map(voice => (
+          <div
+            key={voice.id}
+            onClick={() => setSelectedVoice(voice.id)}
+            className={`
+              border rounded-lg p-3 cursor-pointer transition-all duration-200
+              ${selectedVoice === voice.id
+                ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200'
+                : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}
+            `}
+          >
+            <div className="flex items-center">
+              <div className={`
+                w-4 h-4 rounded-full mr-2 flex-shrink-0 border
+                ${selectedVoice === voice.id
+                  ? 'border-blue-500 bg-blue-500'
+                  : 'border-gray-300 bg-white'}
+              `}>
+                {selectedVoice === voice.id && (
+                  <svg className="w-4 h-4 text-white" viewBox="0 0 16 16" fill="currentColor">
+                    <circle cx="8" cy="8" r="4" />
+                  </svg>
+                )}
+              </div>
+              <div>
+                <p className="font-medium text-sm">{voice.name}</p>
+                <p className="text-xs text-gray-500">{voice.description}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 
@@ -2132,3 +2217,4 @@ Responde SOLO con la nueva narración, sin explicaciones adicionales.`,
     </div>
   );
 }
+
