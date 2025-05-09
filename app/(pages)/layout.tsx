@@ -71,7 +71,7 @@ export default function AppLayout({
           <div className="h-16 flex items-center px-6 border-b border-gray-200">
             <Link href="/dashboard">
               <span className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-                RedditVids
+                VidAI
               </span>
             </Link>
           </div>

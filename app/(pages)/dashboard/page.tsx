@@ -82,7 +82,7 @@ export default function DashboardPage() {
       {/* Welcome Section */}
       <div className="mb-4">
         <h1 className="text-xl font-bold text-gray-900 mb-1">
-          Welcome to Reddit Video Generator
+          Welcome to AI Video Generator
         </h1>
         <p className="text-gray-600 text-sm">
           Choose a tool to start creating your content
