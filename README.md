@@ -2,14 +2,14 @@
 
 ## AI-Powered Video Creation Made Simple
 
-![VidAI](/readme/screenshot.png)
+![VidAI](https://github.com/user-attachments/assets/7877b74b-8da6-4db8-94fb-f7e4d0cbf273)
 
 VidAI is a cutting-edge web application that combines the power of AI with video editing capabilities, making video creation accessible to everyone. Built with React, Next.js, and FFmpeg, this tool enables users to create professional-quality videos with just a few clicks.
 
 ## ✨ Features
 
 ### 🤖 AI-Powered Video Generation
-- **Story Generation**: Create engaging video scripts using AI 
+- **Story Generation**: Create engaging video scripts using AI
 - **Voiceover Creation**: Generate natural-sounding narrations using advanced text-to-speech models
 - **Visual Generation**: Automatically create images that match your story segments
 
